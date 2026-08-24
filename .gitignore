@@ -1,0 +1,18 @@
+# Local analysis clones (not part of Junto)
+.palmier-pro-analysis/
+.palmier-pro-open-issues.txt
+
+# Rust
+/target/
+**/*.rs.bk
+
+# Frontend (when added)
+node_modules/
+dist/
+.svelte-kit/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
