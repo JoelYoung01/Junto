@@ -1,6 +1,6 @@
 # Junto
 
-A fast, folder-first desktop video tool for personal video — vlogs, home movies, and photo slideshows.
+A fast, filesystem-first desktop video tool for personal video — vlogs, home movies, and photo slideshows.
 
 Open a folder of footage and assets, refine the cut on a simple timeline (drag-and-drop + natural language), and export a finished video file. Junto is a **tool**, not an autocomplete: you stay in control; an in-app agent handles complexity via a **large MCP tool layer** you never have to learn.
 
@@ -14,12 +14,7 @@ Ship on Linux, macOS, and Windows. Web, iOS, and Android are out of scope for v1
 
 Minimal UI: folder, preview, timeline, and drag-select annotations. No jargon.
 
-- Plain language or timeline selections drive the agent
-- Large streamable-HTTP MCP API behind the scenes; users never see tool names
-- In-app chat and external agents (one-click bundles) share one live project
-- Annotations carry structured context, clipboard-copyable for external sessions
-
-### Folder-first
+### Filesystem-first
 
 Open a directory of clips, photos, and music. Junto builds an initial timeline for vlog, slideshow, or hybrid workflows.
 
