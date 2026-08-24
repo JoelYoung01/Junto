@@ -1,0 +1,32 @@
+[package]
+name = "junto-desktop"
+description = "Junto desktop application (Tauri)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+default-run = "junto-desktop"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+dirs.workspace = true
+junto-core = { path = "../junto-core" }
+junto-mcp = { path = "../junto-mcp" }
+serde.workspace = true
+serde_json.workspace = true
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-shell = "2"
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

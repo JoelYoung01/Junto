@@ -1,0 +1,14 @@
+{
+  "name": "junto",
+  "private": true,
+  "packageManager": "pnpm@10.33.3",
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
+  },
+  "scripts": {
+    "dev": "pnpm --dir ui dev",
+    "build:ui": "pnpm --dir ui build",
+    "desktop:dev": "cargo run -p junto-desktop",
+    "desktop:build": "cargo build -p junto-desktop --release"
+  }
+}
