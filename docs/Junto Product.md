@@ -2,17 +2,22 @@
 
 > **Status:** Product definition (name locked)  
 > **Repository:** [github.com/JoelYoung01/Junto](https://github.com/JoelYoung01/Junto)  
-> **Last updated:** August 24, 2026
+> **Last updated:** August 24, 2026  
+> **Principles:** [README](../README.md) is the source of truth for guiding principles and positioning.
 
 ---
 
 ## 1. Vision
 
-**Junto** is a purpose-built video production tool optimized for **quick, idea-driven video creation** — not full automation, and not a generic NLE clone.
+**Junto** is a fast, **filesystem-first** desktop video tool for personal video — vlogs, home movies, and photo slideshows. It is optimized for **quick, idea-driven video creation**, not full automation, and not a generic NLE clone.
 
-Junto helps people turn a folder of raw footage and assets into a **finished video file** (vlog, home movie, or photo slideshow) with **high-quality export**, without requiring deep knowledge of video editing jargon, codecs, or professional tool workflows.
+Junto helps people turn a directory of raw footage and assets into a **finished video file** with **high-quality export**, without requiring deep knowledge of video editing jargon, codecs, or professional tool workflows.
 
-**Core philosophy:** This is a **tool**, not an autocomplete. The user stays in control of the creative decisions. The software makes execution fast and understandable. Natural language and an AI agent handle complexity behind the surface; the user focuses on what they want the video to be.
+**Core philosophy:** This is a **tool**, not an autocomplete. You stay in control; an in-app agent handles complexity via a **large MCP tool layer** you never have to learn. The software makes execution fast and understandable; the user focuses on what they want the video to be.
+
+### Who it's for
+
+People with a folder of trip footage, event clips, or photos plus music — and a clear idea for the video — who don't want to learn Resolve, Premiere, or professional editing jargon.
 
 ---
 
@@ -40,8 +45,8 @@ The target user often has **lots of raw footage** or **a folder of photos + musi
 
 ### Typical workflow
 
-1. User gathers **raw footage and assets** in a folder (video clips, photos, music tracks)
-2. Junto **ingests** the folder and builds an initial **timeline** of media
+1. User gathers **raw footage and assets** on disk (video clips, photos, music tracks)
+2. Junto **ingests** the directory and builds an initial **timeline** of media
 3. User enters **staging / editorial mode** — review, rearrange, trim, add music
 4. User refines via **direct manipulation** (drag-and-drop) and **natural language** to the agent
 5. Junto **exports** a finished video file to disk
@@ -50,45 +55,35 @@ The target user often has **lots of raw footage** or **a folder of photos + musi
 
 ## 4. Product Principles
 
-1. **Tool, not autocomplete** — AI assists execution; the user directs creative intent
-2. **Hide complexity** — most functionality accessible through natural language + agent, not memorized UI
-3. **Editorial staging** — explicit middle phase between ingest and final export; user can slide clips on tracks like familiar video editors
-4. **Context-rich interaction** — annotations and selections on the timeline give the agent precise, visual context (inspired by annotation patterns from design tools)
-5. **Folder-first** — start from a directory of media, not a blank project wizard
-6. **Plain language** — avoid forcing users to learn NLE jargon unless they want to
-7. **Agent as middleman** — users do not operate tools directly; a friendly agent arbitrates between intent and a **large, capable tool layer** behind the UI
+Aligned with the [README](../README.md). When this document and the README disagree on principles or positioning, the README wins.
 
----
+### Cross-platform desktop (v1)
 
-## 4.1 Agent vs UI — where complexity lives
+Ship on Linux, macOS, and Windows. Web, iOS, and Android are out of scope for v1.
 
-Junto deliberately splits the surface area:
+### Simple surface
 
-| Layer | Who sees it | Goal |
-|-------|-------------|------|
-| **UI** | Human | Simple staging: folder, preview, drag-and-drop timeline, annotations, chat |
-| **MCP / tool API** | Agent (in-app or external) | **Broad and robust** — many precise operations the engine can perform |
-| **Agent** | Human (via chat + annotations) | Translates plain language and selection context into correct tool sequences |
+Minimal UI: folder, preview, timeline, and drag-select annotations. No jargon.
 
-**Users never need to know what tools exist.** They describe outcomes (“make this part faster,” “use the other song here”). The agent reads the tool catalog, plans steps, and calls what’s needed.
+### Filesystem-first
 
-We are **not** optimizing for a minimal MCP surface for the sake of simplicity. We want **depth and coverage** on the tool side — granular timeline ops, ingest, analysis, export, annotations, safety/undo — as long as tools are **well-named, non-overlapping, and documented for agents** (not cluttered into the main UI).
+Open a directory of clips, photos, and music. Junto builds an initial timeline for vlog, slideshow, or hybrid workflows.
 
-More tools is fine when:
+### You steer, Agent assists
 
-- Each tool has a clear, single responsibility
-- Overlapping capabilities are distinguished in agent instructions (when to use which)
-- Failures return actionable errors so the agent can recover
+Not full automation. Agent changes are staged: propose, preview, then apply or discard.
 
-The complexity budget is spent on **agent + engine**, not on **menus and jargon** in the primary UI.
+### Fast and non-destructive
+
+Renders and agent work run off the UI thread. Source files stay untouched until export.
 
 ---
 
 ## 5. Key Features (Planned)
 
-### 5.1 Folder ingest & project bootstrap
+### 5.1 Filesystem ingest & project bootstrap
 
-- Point at a folder of footage and assets
+- Point at a directory of footage and assets on disk
 - Auto-detect video, image, and audio files
 - Build an initial timeline (order, durations, track layout)
 - Support both **slideshow-first** and **footage-heavy vlog** starting points
@@ -182,7 +177,17 @@ After evaluating Kdenlive (fork / plugin) and DaVinci Resolve (plugin), the chos
 
 ## 8. MCP / Agent Surface (Conceptual)
 
-The MCP layer should be **comprehensive and robust** — the full programmatic face of Junto for agents. It is **not** the user-facing UI. Tools should be precise and well-scoped (not raw ffmpeg flags leaking to the agent), but we should prefer **many clear tools** over a artificially small set when coverage matters.
+The MCP layer is how the agent does work behind the simple UI. It should be **comprehensive and robust** — the full programmatic face of Junto for agents — but it is **not** the user-facing UI. Users never need to know what tools exist; they describe outcomes in plain language or via timeline annotations, and the agent plans the right tool sequence.
+
+| Layer | Who sees it | Goal |
+|-------|-------------|------|
+| **UI** | Human | Simple staging: folder, preview, drag-and-drop timeline, annotations |
+| **MCP / tool API** | Agent | Broad, robust operations the engine can perform |
+| **Agent** | Human (via chat + annotations) | Translates intent and selection context into tool calls |
+
+Tools should be precise and well-scoped (not raw ffmpeg flags leaking to the agent). We prefer **many clear tools** over an artificially small set when coverage matters. More tools is fine when each has a single responsibility, overlaps are documented for agents, and failures return actionable errors.
+
+The complexity budget is spent on **agent + engine**, not on **menus and jargon** in the primary UI.
 
 ### Design principles for tools
 
@@ -300,9 +305,11 @@ We are not targeting a fixed small number of tools. Competitors expose ~48–78+
 | Aug 24, 2026 | **Output is video files only** — local export, not platform publish |
 | Aug 24, 2026 | Product name **Junto**; repo [JoelYoung01/Junto](https://github.com/JoelYoung01/Junto) |
 | Aug 24, 2026 | **Large MCP tool surface** behind agent middleman — UI stays simple; tools are for agents, not direct user exposure |
+| Aug 24, 2026 | Guiding principles consolidated in README; product doc follows README as source of truth |
+| Aug 24, 2026 | Renamed **folder-first** → **filesystem-first** |
 
 ---
 
 ## 14. One-Line Pitch
 
-**Junto is a fast, folder-first video tool that turns your footage and photos into finished video files — you steer the edit with simple drag-and-drop and plain language, and an agent handles the hard parts behind the scenes.**
+**Junto is a fast, filesystem-first desktop video tool for personal video — open a directory of footage and assets, refine the cut on a simple timeline, and export a finished video file. You steer; an agent handles the hard parts behind the scenes.**

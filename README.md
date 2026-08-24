@@ -10,7 +10,7 @@ Open a folder of footage and assets, refine the cut on a simple timeline (drag-a
 
 Ship on Linux, macOS, and Windows. Web, iOS, and Android are out of scope for v1.
 
-### Simple surface, agent-driven
+### Simple surface
 
 Minimal UI: folder, preview, timeline, and drag-select annotations. No jargon.
 
@@ -18,19 +18,17 @@ Minimal UI: folder, preview, timeline, and drag-select annotations. No jargon.
 
 Open a directory of clips, photos, and music. Junto builds an initial timeline for vlog, slideshow, or hybrid workflows.
 
-### You steer, AI assists
+### You steer, Agent assists
 
 Not full automation. Agent changes are staged: propose, preview, then apply or discard.
-
-### Personal video, local export
-
-Home movies and slideshows. Export MP4 to disk. No platform publishing or gen credits in v1.
 
 ### Fast and non-destructive
 
 Renders and agent work run off the UI thread. Source files stay untouched until export.
 
 ---
+
+
 
 ## Who it's for
 
@@ -47,6 +45,8 @@ Early product definition and competitive research. Application code not started 
 - [Kerf analysis](./docs/competitive/Kerf%20Product%20Analysis.md)
 - [Palmier Pro analysis](./docs/competitive/Palmier%20Pro%20Product.md)
 
+
+
 ## Stack (planned)
 
 - **Rust** — core engine, timeline model, ingest, render orchestration, MCP server
@@ -54,6 +54,8 @@ Early product definition and competitive research. Application code not started 
 - **Web UI** — timeline, drag-and-drop, annotation overlays, agent panel
 - **ffmpeg** — decode, encode, filter, mux
 
+
+
 ## Repository
 
-https://github.com/JoelYoung01/Junto
+[https://github.com/JoelYoung01/Junto](https://github.com/JoelYoung01/Junto)
