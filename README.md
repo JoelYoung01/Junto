@@ -36,7 +36,24 @@ People with a folder of trip footage, event clips, or photos plus music — and 
 
 ## Status
 
-Early product definition and competitive research. Application code not started yet.
+MVP in progress. Rust core + Tauri desktop shell + React UI (shadcn/Tailwind).
+
+## Development
+
+Requires [pnpm](https://pnpm.io), Rust (1.85+), and ffmpeg.
+
+```bash
+pnpm install          # install UI deps (workspace root)
+pnpm dev              # UI only (Vite)
+./scripts/build.sh    # build UI + desktop release binary
+```
+
+Tauri dev (UI + desktop):
+
+```bash
+export PATH="$HOME/.cargo/bin:$PATH"
+cargo run -p junto-desktop
+```
 
 ## Documentation
 
