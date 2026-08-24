@@ -6,17 +6,34 @@ Open a folder of footage and assets, refine the cut on a simple timeline (drag-a
 
 ## Guiding principles
 
-1. **Cross-platform desktop (v1)** — Linux, macOS, and Windows. Web, iOS, and Android later.
+### Cross-platform desktop (v1)
 
-2. **Simple surface, agent-driven** — Folder, preview, timeline, and drag-select annotations — no jargon. Users speak in plain language or point at a region; a large streamable-HTTP MCP API does the work. In-app chat and external agents (via one-click bundles) share one live project. Annotations carry structured context (clipboard-copyable for external sessions). Users never see tool names.
+Ship on Linux, macOS, and Windows. Web, iOS, and Android are out of scope for v1.
 
-3. **Folder-first** — Open a directory of clips, photos, and music → auto-built timeline (vlog, slideshow, or hybrid).
+### Simple surface, agent-driven
 
-4. **You steer, AI assists** — Not full automation. Agent changes are staged: propose → preview → apply or discard.
+Minimal UI: folder, preview, timeline, and drag-select annotations. No jargon.
 
-5. **Personal video, local export** — Home movies and slideshows. MP4 to disk. No platform publishing or gen credits in v1.
+- Plain language or timeline selections drive the agent
+- Large streamable-HTTP MCP API behind the scenes; users never see tool names
+- In-app chat and external agents (one-click bundles) share one live project
+- Annotations carry structured context, clipboard-copyable for external sessions
 
-6. **Fast and non-destructive** — Renders and agent work off the UI thread. Source files untouched until export.
+### Folder-first
+
+Open a directory of clips, photos, and music. Junto builds an initial timeline for vlog, slideshow, or hybrid workflows.
+
+### You steer, AI assists
+
+Not full automation. Agent changes are staged: propose, preview, then apply or discard.
+
+### Personal video, local export
+
+Home movies and slideshows. Export MP4 to disk. No platform publishing or gen credits in v1.
+
+### Fast and non-destructive
+
+Renders and agent work run off the UI thread. Source files stay untouched until export.
 
 ---
 
