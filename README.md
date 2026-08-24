@@ -8,19 +8,15 @@ Open a folder of footage and assets, refine the cut on a simple timeline (drag-a
 
 1. **Cross-platform desktop (v1)** — Linux, macOS, and Windows. Web, iOS, and Android later.
 
-2. **Simple surface, capable engine** — Folder, preview, timeline, annotations. No jargon. Editing depth lives in the engine and agent layer, not the menus.
+2. **Simple surface, agent-driven** — Folder, preview, timeline, and drag-select annotations — no jargon. Users speak in plain language or point at a region; a large streamable-HTTP MCP API does the work. In-app chat and external agents (via one-click bundles) share one live project. Annotations carry structured context (clipboard-copyable for external sessions). Users never see tool names.
 
-3. **Agent + MCP** — Users speak in plain language; a large streamable-HTTP MCP API does the work. In-app chat and external agents (via one-click plugin bundles) share one live project. Users never see tool names.
+3. **Folder-first** — Open a directory of clips, photos, and music → auto-built timeline (vlog, slideshow, or hybrid).
 
-4. **Timeline annotations** — Drag-select a region to attach structured context for the agent. Copy to clipboard for external agent sessions.
+4. **You steer, AI assists** — Not full automation. Agent changes are staged: propose → preview → apply or discard.
 
-5. **Folder-first** — Open a directory of clips, photos, and music → auto-built timeline (vlog, slideshow, or hybrid).
+5. **Personal video, local export** — Home movies and slideshows. MP4 to disk. No platform publishing or gen credits in v1.
 
-6. **You steer, AI assists** — Not full automation. Agent changes are staged: propose → preview → apply or discard.
-
-7. **Personal video, local export** — Home movies and slideshows. MP4 to disk. No platform publishing or gen credits in v1.
-
-8. **Fast and non-destructive** — Renders and agent work off the UI thread. Source files untouched until export.
+6. **Fast and non-destructive** — Renders and agent work off the UI thread. Source files untouched until export.
 
 ---
 
