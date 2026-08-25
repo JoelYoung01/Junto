@@ -10,7 +10,7 @@ const THUMBS_DIR: &str = "thumbs";
 
 /// Extract a JPEG frame from an image or video and return the bytes.
 /// Audio sources are not supported.
-pub fn extract_frame_jpeg(source: &Path, time_seconds: f64, max_width: u32) -> Result<Vec<u8>> {
+pub fn extract_frame_jpeg(source: &Path, time_seconds: f64, max_height: u32) -> Result<Vec<u8>> {
     let kind = MediaKind::from_path(source).ok_or_else(|| {
         JuntoError::Export(format!("unsupported media: {}", source.display()))
     })?;
@@ -24,7 +24,7 @@ pub fn extract_frame_jpeg(source: &Path, time_seconds: f64, max_width: u32) -> R
         )));
     }
 
-    let scale = format!("scale={max_width}:-1:force_original_aspect_ratio=decrease");
+    let scale = format!("scale=-1:{max_height}:force_original_aspect_ratio=decrease");
     let time = time_seconds.max(0.0);
 
     let mut cmd = Command::new("ffmpeg");
@@ -74,7 +74,7 @@ pub fn cached_thumb_path(
     project_root: &Path,
     relative_source: &str,
     time_seconds: f64,
-    max_width: u32,
+    max_height: u32,
 ) -> PathBuf {
     let bucket_ms = (time_seconds.max(0.0) * 10.0).round() as i64; // 100ms buckets
     let safe = relative_source
@@ -83,7 +83,7 @@ pub fn cached_thumb_path(
         .replace(' ', "_");
     meta_dir(project_root)
         .join(THUMBS_DIR)
-        .join(format!("{safe}_{bucket_ms}ms_w{max_width}.jpg"))
+        .join(format!("{safe}_{bucket_ms}ms_h{max_height}.jpg"))
 }
 
 /// Return JPEG bytes, reading from cache when present.
@@ -92,16 +92,16 @@ pub fn frame_jpeg_cached(
     relative_source: &str,
     absolute_source: &Path,
     time_seconds: f64,
-    max_width: u32,
+    max_height: u32,
 ) -> Result<Vec<u8>> {
-    let cache = cached_thumb_path(project_root, relative_source, time_seconds, max_width);
+    let cache = cached_thumb_path(project_root, relative_source, time_seconds, max_height);
     if cache.exists() {
         return Ok(fs::read(&cache)?);
     }
     if let Some(parent) = cache.parent() {
         fs::create_dir_all(parent)?;
     }
-    let jpeg = extract_frame_jpeg(absolute_source, time_seconds, max_width)?;
+    let jpeg = extract_frame_jpeg(absolute_source, time_seconds, max_height)?;
     let _ = fs::write(&cache, &jpeg);
     Ok(jpeg)
 }

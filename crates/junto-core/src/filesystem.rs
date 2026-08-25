@@ -24,6 +24,21 @@ pub struct ScannedMediaFile {
     pub media_kind: MediaKind,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectEntryKind {
+    Directory,
+    File,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectEntry {
+    pub relative_path: String,
+    pub name: String,
+    pub entry_kind: ProjectEntryKind,
+    pub media_kind: Option<MediaKind>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DirectoryScan {
     pub kind: DirectoryScanKind,
@@ -176,6 +191,51 @@ pub fn consolidate_media_into_raw_footage(project_root: &Path) -> Result<Vec<Str
     }
 
     Ok(moved)
+}
+
+/// List every file and directory under the project root (excluding `.junto/` internals).
+pub fn list_project_entries(project_root: &Path) -> Result<Vec<ProjectEntry>> {
+    let mut entries = Vec::new();
+
+    for entry in WalkDir::new(project_root)
+        .follow_links(false)
+        .sort_by(|a, b| a.path().cmp(b.path()))
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        let path = entry.path();
+        if path == project_root {
+            continue;
+        }
+
+        let relative = relative_to_project(project_root, path)?;
+        if relative.starts_with(".junto/") || relative == ".junto" {
+            continue;
+        }
+
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| relative.clone());
+
+        if path.is_dir() {
+            entries.push(ProjectEntry {
+                relative_path: relative,
+                name,
+                entry_kind: ProjectEntryKind::Directory,
+                media_kind: None,
+            });
+        } else {
+            entries.push(ProjectEntry {
+                relative_path: relative.clone(),
+                name,
+                entry_kind: ProjectEntryKind::File,
+                media_kind: MediaKind::from_path(path),
+            });
+        }
+    }
+
+    Ok(entries)
 }
 
 pub fn list_raw_footage(project_root: &Path) -> Result<Vec<ScannedMediaFile>> {

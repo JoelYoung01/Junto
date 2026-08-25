@@ -136,6 +136,10 @@ impl Project {
         list_raw_footage(&self.root)
     }
 
+    pub fn list_project_entries(&self) -> Result<Vec<crate::filesystem::ProjectEntry>> {
+        crate::filesystem::list_project_entries(&self.root)
+    }
+
     pub fn resolve_path(&self, relative: &str) -> PathBuf {
         self.root.join(relative)
     }
