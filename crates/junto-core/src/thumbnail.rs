@@ -4,7 +4,7 @@ use std::process::{Command, Stdio};
 
 use crate::error::{JuntoError, Result};
 use crate::media::MediaKind;
-use crate::paths::meta_dir;
+use crate::paths::{meta_dir, normalize_project_relative_path};
 
 const THUMBS_DIR: &str = "thumbs";
 
@@ -77,13 +77,14 @@ pub fn cached_thumb_path(
     max_height: u32,
 ) -> PathBuf {
     let bucket_ms = (time_seconds.max(0.0) * 10.0).round() as i64; // 100ms buckets
-    let safe = relative_source
+    let relative = normalize_project_relative_path(project_root, relative_source);
+    let safe = relative
         .replace('/', "__")
         .replace('\\', "__")
-        .replace(' ', "_");
-    meta_dir(project_root)
-        .join(THUMBS_DIR)
-        .join(format!("{safe}_{bucket_ms}ms_h{max_height}.jpg"))
+        .replace(' ', "_")
+        .replace(':', "_");
+    let filename = format!("{safe}_{bucket_ms}ms_h{max_height}.jpg");
+    meta_dir(project_root).join(THUMBS_DIR).join(filename)
 }
 
 /// Return JPEG bytes, reading from cache when present.
@@ -139,5 +140,25 @@ mod tests {
         let bytes = extract_frame_jpeg(&img, 0.0, 160).expect("frame");
         assert!(bytes.len() > 100);
         assert_eq!(&bytes[0..2], &[0xFF, 0xD8]); // JPEG SOI
+    }
+
+    #[test]
+    fn cache_path_stays_under_meta_dir_for_absolute_source() {
+        let dir = TempDir::new().unwrap();
+        let project_root = dir.path().join("project");
+        std::fs::create_dir_all(&project_root).unwrap();
+        let media = project_root.join("Raw Footage").join("clip.jpg");
+        std::fs::create_dir_all(media.parent().unwrap()).unwrap();
+        std::fs::write(&media, b"").unwrap();
+
+        let cache = cached_thumb_path(
+            &project_root,
+            &media.to_string_lossy(),
+            0.0,
+            48,
+        );
+
+        assert!(cache.starts_with(meta_dir(&project_root).join(THUMBS_DIR)));
+        assert!(cache.starts_with(&project_root));
     }
 }

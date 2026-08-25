@@ -140,8 +140,17 @@ impl Project {
         crate::filesystem::list_project_entries(&self.root)
     }
 
-    pub fn resolve_path(&self, relative: &str) -> PathBuf {
-        self.root.join(relative)
+    pub fn resolve_path(&self, source: &str) -> PathBuf {
+        let path = Path::new(source);
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.root.join(source)
+        }
+    }
+
+    pub fn relative_source_path(&self, source: &str) -> String {
+        crate::paths::normalize_project_relative_path(&self.root, source)
     }
 
     pub fn default_duration_for(&self, kind: MediaKind) -> f64 {

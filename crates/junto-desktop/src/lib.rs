@@ -174,6 +174,7 @@ fn add_clip_to_timeline(
     let track_id = Uuid::parse_str(&track_id).map_err(|e| e.to_string())?;
     let mut guard = state.project.write().map_err(|e| e.to_string())?;
     let project = guard.as_mut().ok_or_else(|| "no project open".to_string())?;
+    let source_path = project.relative_source_path(&source_path);
     let media_kind = junto_core::MediaKind::from_path(std::path::Path::new(&source_path))
         .ok_or_else(|| "unsupported media file".to_string())?;
     let duration = match duration {
@@ -370,11 +371,12 @@ async fn get_media_frame(
     max_height: Option<u32>,
     state: State<'_, AppState>,
 ) -> Result<Option<String>, String> {
-    let (root, abs) = {
+    let (root, relative, abs) = {
         let guard = state.project.read().map_err(|e| e.to_string())?;
         let project = guard.as_ref().ok_or_else(|| "no project open".to_string())?;
-        let abs = project.resolve_path(&source_path);
-        (project.root.clone(), abs)
+        let relative = project.relative_source_path(&source_path);
+        let abs = project.resolve_path(&relative);
+        (project.root.clone(), relative, abs)
     };
     let kind = junto_core::MediaKind::from_path(&abs);
     if matches!(kind, Some(junto_core::MediaKind::Audio) | None) {
@@ -382,9 +384,8 @@ async fn get_media_frame(
     }
     let time = time_seconds.unwrap_or(0.0);
     let height = max_height.unwrap_or(320);
-    let source_path_clone = source_path.clone();
     let jpeg = tauri::async_runtime::spawn_blocking(move || {
-        junto_core::frame_jpeg_cached(&root, &source_path_clone, &abs, time, height)
+        junto_core::frame_jpeg_cached(&root, &relative, &abs, time, height)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -446,9 +447,10 @@ async fn get_preview_frame(
         };
         let local = (t - clip.start + clip.source_offset).max(0.0);
         let abs = project.resolve_path(&clip.source_path);
+        let relative = project.relative_source_path(&clip.source_path);
         (
             project.root.clone(),
-            clip.source_path,
+            relative,
             clip.media_kind,
             abs,
             local,
