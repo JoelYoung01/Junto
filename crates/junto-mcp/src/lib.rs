@@ -1,5 +1,4 @@
 use std::net::SocketAddr;
-use std::path::Path;
 use std::sync::{Arc, RwLock};
 
 use axum::extract::State;
@@ -132,7 +131,7 @@ fn execute_tool(project: SharedProject, req: ToolCallRequest) -> Result<ToolCall
             let start: f64 = args.get("start").and_then(|v| v.as_f64()).unwrap_or(0.0);
             let duration = match args.get("duration").and_then(|v| v.as_f64()) {
                 Some(d) => d,
-                None => resolve_clip_duration(project, &source_path, media_kind),
+                None => project.duration_for_media(&source_path, media_kind),
             };
             let id = project
                 .file
@@ -247,44 +246,4 @@ fn parse_arg<T: for<'de> Deserialize<'de>>(args: &Value, key: &str) -> Result<T,
         .cloned()
         .ok_or_else(|| format!("missing argument: {key}"))
         .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
-}
-
-fn resolve_clip_duration(
-    project: &Project,
-    source_path: &str,
-    media_kind: junto_core::MediaKind,
-) -> f64 {
-    match media_kind {
-        junto_core::MediaKind::Image => project.default_duration_for(media_kind),
-        junto_core::MediaKind::Video | junto_core::MediaKind::Audio => {
-            let abs = project.resolve_path(source_path);
-            probe_duration_ffprobe(&abs).unwrap_or_else(|| project.default_duration_for(media_kind))
-        }
-    }
-}
-
-/// Temporary MCP-local duration probe until Core exports `probe_duration`.
-fn probe_duration_ffprobe(path: &Path) -> Option<f64> {
-    let output = std::process::Command::new("ffprobe")
-        .args([
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
-        ])
-        .arg(path)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&output.stdout);
-    let duration: f64 = text.trim().parse().ok()?;
-    if duration.is_finite() && duration > 0.0 {
-        Some(duration)
-    } else {
-        None
-    }
 }

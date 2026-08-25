@@ -135,7 +135,7 @@ fn add_clip_to_timeline(
         .ok_or_else(|| "unsupported media file".to_string())?;
     let duration = match duration {
         Some(d) => d,
-        None => resolve_clip_duration(project, &source_path, media_kind),
+        None => project.duration_for_media(&source_path, media_kind),
     };
     let clip_id = project
         .file
@@ -428,49 +428,6 @@ fn project_summary(project: &Project) -> ProjectSummary {
         name: project.file.name.clone(),
         root: project.root.to_string_lossy().into(),
         duration_seconds: project.file.timeline.duration(),
-    }
-}
-
-/// Resolve clip duration when the caller omits it.
-/// Prefer core `probe_duration` when available; otherwise probe via ffprobe
-/// for video/audio and fall back to project defaults (photo default / 5s).
-fn resolve_clip_duration(
-    project: &Project,
-    source_path: &str,
-    media_kind: junto_core::MediaKind,
-) -> f64 {
-    match media_kind {
-        junto_core::MediaKind::Image => project.default_duration_for(media_kind),
-        junto_core::MediaKind::Video | junto_core::MediaKind::Audio => {
-            let abs = project.resolve_path(source_path);
-            probe_duration_ffprobe(&abs).unwrap_or_else(|| project.default_duration_for(media_kind))
-        }
-    }
-}
-
-/// Temporary desktop-local duration probe until Core exports `probe_duration`.
-fn probe_duration_ffprobe(path: &std::path::Path) -> Option<f64> {
-    let output = std::process::Command::new("ffprobe")
-        .args([
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
-        ])
-        .arg(path)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&output.stdout);
-    let duration: f64 = text.trim().parse().ok()?;
-    if duration.is_finite() && duration > 0.0 {
-        Some(duration)
-    } else {
-        None
     }
 }
 
