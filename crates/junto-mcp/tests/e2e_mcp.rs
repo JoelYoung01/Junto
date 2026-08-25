@@ -6,9 +6,15 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use junto_core::Project;
 use junto_mcp::router;
+use rmcp::{
+    model::{CallToolRequestParams, CallToolResult, ClientInfo, ContentBlock},
+    service::RunningService,
+    transport::StreamableHttpClientTransport,
+    RoleClient, ServiceExt,
+};
 use serde_json::json;
 use tempfile::TempDir;
-use tower::ServiceExt;
+use tower::ServiceExt as TowerServiceExt;
 
 fn generate_test_image(path: &Path) {
     let status = Command::new("ffmpeg")
@@ -29,40 +35,35 @@ fn generate_test_image(path: &Path) {
     assert!(status.success());
 }
 
-async fn post_tool(
-    app: &mut axum::Router,
-    body: serde_json::Value,
-) -> serde_json::Value {
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/mcp")
-                .header("content-type", "application/json")
-                .body(Body::from(body.to_string()))
-                .expect("request"),
-        )
-        .await
-        .expect("response");
-    assert_eq!(response.status(), StatusCode::OK);
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("body");
-    serde_json::from_slice(&bytes).expect("json response")
+fn tool_text(result: &CallToolResult) -> &str {
+    match &result.content[0] {
+        ContentBlock::Text(text) => &text.text,
+        other => panic!("expected text content, got {other:?}"),
+    }
 }
 
-fn tool_text(response: &serde_json::Value) -> &str {
-    response["content"][0]["text"].as_str().expect("tool text")
-}
-
-fn assert_tool_ok(response: &serde_json::Value) {
+fn assert_tool_ok(result: &CallToolResult) {
     assert_ne!(
-        response.get("is_error").and_then(|v| v.as_bool()),
+        result.is_error,
         Some(true),
         "tool error: {}",
-        tool_text(response)
+        tool_text(result)
     );
+}
+
+async fn call_tool(
+    client: &RunningService<RoleClient, ClientInfo>,
+    name: &str,
+    arguments: serde_json::Value,
+) -> CallToolResult {
+    let args = arguments
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    client
+        .call_tool(CallToolRequestParams::new(name.to_string()).with_arguments(args))
+        .await
+        .expect("mcp tool call")
 }
 
 #[tokio::test]
@@ -80,7 +81,7 @@ async fn mcp_tools_drive_project_workflow() {
     assert_eq!(imported.len(), 1);
 
     let shared = Arc::new(RwLock::new(Some(project)));
-    let mut app = router(Arc::clone(&shared), None);
+    let app = router(Arc::clone(&shared), None);
 
     let health = app
         .clone()
@@ -94,27 +95,23 @@ async fn mcp_tools_drive_project_workflow() {
         .expect("health response");
     assert_eq!(health.status(), StatusCode::OK);
 
-    let tools = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/tools")
-                .body(Body::empty())
-                .expect("request"),
-        )
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
-        .expect("tools response");
-    assert_eq!(tools.status(), StatusCode::OK);
-    let tools_bytes = axum::body::to_bytes(tools.into_body(), usize::MAX)
+        .expect("bind test listener");
+    let addr = listener.local_addr().expect("local addr");
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("serve mcp");
+    });
+
+    let transport =
+        StreamableHttpClientTransport::from_uri(format!("http://{addr}/mcp"));
+    let client = ClientInfo::default()
+        .serve(transport)
         .await
-        .expect("tools body");
-    let tools_json: serde_json::Value = serde_json::from_slice(&tools_bytes).expect("tools json");
-    let tool_names: Vec<&str> = tools_json["tools"]
-        .as_array()
-        .expect("tools array")
-        .iter()
-        .map(|t| t["name"].as_str().expect("name"))
-        .collect();
+        .expect("connect mcp client");
+
+    let tools = client.list_all_tools().await.expect("list tools");
+    let tool_names: Vec<String> = tools.iter().map(|tool| tool.name.to_string()).collect();
     for required in [
         "trim_clip",
         "set_clip_duration",
@@ -122,9 +119,11 @@ async fn mcp_tools_drive_project_workflow() {
         "add_track",
         "move_clip",
         "update_export_settings",
+        "export_video",
+        "get_timeline",
     ] {
         assert!(
-            tool_names.contains(&required),
+            tool_names.iter().any(|name| name == required),
             "missing tool {required} in {tool_names:?}"
         );
     }
@@ -141,16 +140,14 @@ async fn mcp_tools_drive_project_workflow() {
             .to_string()
     };
 
-    let add_response = post_tool(
-        &mut app,
+    let add_response = call_tool(
+        &client,
+        "add_clip",
         json!({
-            "name": "add_clip",
-            "arguments": {
-                "track_id": track_id,
-                "source_path": imported[0],
-                "start": 0.0,
-                "duration": 1.5
-            }
+            "track_id": track_id,
+            "source_path": imported[0],
+            "start": 0.0,
+            "duration": 1.5
         }),
     )
     .await;
@@ -162,49 +159,36 @@ async fn mcp_tools_drive_project_workflow() {
         .expect("clip_id")
         .to_string();
 
-    let photo_dur = post_tool(
-        &mut app,
-        json!({
-            "name": "set_photo_default_duration",
-            "arguments": { "duration": 4.0 }
-        }),
+    let photo_dur = call_tool(
+        &client,
+        "set_photo_default_duration",
+        json!({ "duration": 4.0 }),
     )
     .await;
     assert_tool_ok(&photo_dur);
     assert!(tool_text(&photo_dur).contains("4"));
 
-    let set_dur = post_tool(
-        &mut app,
-        json!({
-            "name": "set_clip_duration",
-            "arguments": { "clip_id": clip_id, "duration": 2.0 }
-        }),
+    let set_dur = call_tool(
+        &client,
+        "set_clip_duration",
+        json!({ "clip_id": clip_id, "duration": 2.0 }),
     )
     .await;
     assert_tool_ok(&set_dur);
 
-    let trim = post_tool(
-        &mut app,
+    let trim = call_tool(
+        &client,
+        "trim_clip",
         json!({
-            "name": "trim_clip",
-            "arguments": {
-                "clip_id": clip_id,
-                "source_offset": 0.0,
-                "duration": 1.25
-            }
+            "clip_id": clip_id,
+            "source_offset": 0.0,
+            "duration": 1.25
         }),
     )
     .await;
     assert_tool_ok(&trim);
 
-    let add_track = post_tool(
-        &mut app,
-        json!({
-            "name": "add_track",
-            "arguments": { "kind": "video" }
-        }),
-    )
-    .await;
+    let add_track = call_tool(&client, "add_track", json!({ "kind": "video" })).await;
     assert_tool_ok(&add_track);
     let new_track_id = serde_json::from_str::<serde_json::Value>(tool_text(&add_track))
         .expect("track json")["track_id"]
@@ -212,38 +196,34 @@ async fn mcp_tools_drive_project_workflow() {
         .expect("track_id")
         .to_string();
 
-    let move_clip = post_tool(
-        &mut app,
+    let move_clip = call_tool(
+        &client,
+        "move_clip",
         json!({
-            "name": "move_clip",
-            "arguments": {
-                "clip_id": clip_id,
-                "start": 0.5,
-                "track_id": new_track_id
-            }
+            "clip_id": clip_id,
+            "start": 0.5,
+            "track_id": new_track_id
         }),
     )
     .await;
     assert_tool_ok(&move_clip);
 
-    let settings = post_tool(
-        &mut app,
+    let settings = call_tool(
+        &client,
+        "update_export_settings",
         json!({
-            "name": "update_export_settings",
-            "arguments": {
-                "width": 1280,
-                "height": 720,
-                "video_codec": "libx264",
-                "audio_codec": "aac",
-                "crf": 23,
-                "fps": 24
-            }
+            "width": 1280,
+            "height": 720,
+            "video_codec": "libx264",
+            "audio_codec": "aac",
+            "crf": 23,
+            "fps": 24
         }),
     )
     .await;
     assert_tool_ok(&settings);
 
-    let export_response = post_tool(&mut app, json!({ "name": "export_video" })).await;
+    let export_response = call_tool(&client, "export_video", json!({})).await;
     assert_tool_ok(&export_response);
     let export_text = tool_text(&export_response);
     assert!(export_text.contains("output_path"));
@@ -255,7 +235,7 @@ async fn mcp_tools_drive_project_workflow() {
         .to_string();
     assert!(Path::new(&output_path).exists());
 
-    let timeline_response = post_tool(&mut app, json!({ "name": "get_timeline" })).await;
+    let timeline_response = call_tool(&client, "get_timeline", json!({})).await;
     assert_tool_ok(&timeline_response);
     let timeline_text = tool_text(&timeline_response);
     let timeline = serde_json::from_str::<serde_json::Value>(timeline_text).expect("timeline json");

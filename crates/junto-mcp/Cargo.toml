@@ -1,6 +1,6 @@
 [package]
 name = "junto-mcp"
-description = "MCP HTTP server for Junto"
+description = "MCP Streamable HTTP server for Junto"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,14 +10,19 @@ authors.workspace = true
 [dependencies]
 anyhow.workspace = true
 axum.workspace = true
+bytes = "1"
+http-body-util = "0.1"
 junto-core = { path = "../junto-core" }
+rmcp = { version = "3", features = ["server", "transport-streamable-http-server", "schemars"] }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
-tower-http.workspace = true
+tower = "0.5"
 tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+anyhow = "1"
+rmcp = { version = "3", features = ["client", "transport-streamable-http-client-reqwest"] }
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
