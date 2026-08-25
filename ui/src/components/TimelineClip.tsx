@@ -1,13 +1,20 @@
-import { useEffect, useMemo, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useState } from "react";
 import { Trash2 } from "lucide-react";
 
 import { api, Clip } from "@/api";
-
-const PIXELS_PER_SECOND = 80;
+import {
+  CLIP_INSET,
+  DEFAULT_TRACK_HEIGHT,
+  PIXELS_PER_SECOND,
+  clipHeightForLane,
+  filmstripSampleCount,
+  frameMaxHeightForLane,
+} from "@/lib/timelineLayout";
 const FILMSTRIP_SAMPLES = 6;
 
 interface TimelineClipProps {
   clip: Clip;
+  laneHeight?: number;
   selected?: boolean;
   onSelect?: () => void;
   onDragStart: () => void;
@@ -27,12 +34,16 @@ function sampleTimes(sourceOffset: number, duration: number, count: number): num
 
 export function TimelineClip({
   clip,
+  laneHeight = DEFAULT_TRACK_HEIGHT,
   selected = false,
   onSelect,
   onDragStart,
   onDragEnd,
   onRemove,
 }: TimelineClipProps) {
+  const clipHeight = clipHeightForLane(laneHeight);
+  const deferredLaneHeight = useDeferredValue(laneHeight);
+  const frameMaxHeight = frameMaxHeightForLane(deferredLaneHeight);
   const [frames, setFrames] = useState<(string | null)[]>([]);
 
   const times = useMemo(() => {
@@ -40,28 +51,26 @@ export function TimelineClip({
     const sampleCount =
       clip.media_kind === "image"
         ? 1
-        : Math.min(
-            FILMSTRIP_SAMPLES,
-            Math.max(4, Math.ceil((clip.duration * PIXELS_PER_SECOND) / 48)),
-          );
+        : filmstripSampleCount(clip.duration, clipHeight, FILMSTRIP_SAMPLES);
     return sampleTimes(clip.source_offset, clip.duration, sampleCount);
-  }, [clip.media_kind, clip.source_offset, clip.duration]);
+  }, [clip.media_kind, clip.source_offset, clip.duration, clipHeight]);
 
   useEffect(() => {
     if (clip.media_kind === "audio") {
       setFrames([]);
       return;
     }
+    const maxHeight = frameMaxHeight;
     let cancelled = false;
     void Promise.all(
-      times.map((time) => api.getMediaFrame(clip.source_path, time, 120).catch(() => null)),
+      times.map((time) => api.getMediaFrame(clip.source_path, time, maxHeight).catch(() => null)),
     ).then((urls) => {
       if (!cancelled) setFrames(urls);
     });
     return () => {
       cancelled = true;
     };
-  }, [clip.source_path, clip.media_kind, times]);
+  }, [clip.source_path, clip.media_kind, times, frameMaxHeight]);
 
   const fallback =
     clip.media_kind === "audio"
@@ -74,8 +83,10 @@ export function TimelineClip({
 
   return (
     <div
-      className={`absolute top-2 flex h-12 cursor-pointer items-center overflow-hidden rounded-md text-xs text-white shadow-sm ${fallback} ${ring}`}
+      className={`absolute flex cursor-pointer items-center overflow-hidden rounded-md text-xs text-white shadow-sm ${fallback} ${ring}`}
       style={{
+        top: CLIP_INSET,
+        height: clipHeight,
         left: clip.start * PIXELS_PER_SECOND,
         width: Math.max(clip.duration * PIXELS_PER_SECOND, 24),
       }}
@@ -91,19 +102,21 @@ export function TimelineClip({
         <div className="absolute inset-0 flex">
           {frames.map((url, index) =>
             url ? (
-              <div
-                key={`${clip.id}-frame-${index}`}
-                className="h-full flex-1 bg-cover bg-center"
-                style={{ backgroundImage: `url(${url})` }}
-              />
+              <div key={`${clip.id}-frame-${index}`} className="h-full min-w-0 flex-1 overflow-hidden">
+                <img
+                  src={url}
+                  alt=""
+                  className="h-full w-full object-cover"
+                  draggable={false}
+                />
+              </div>
             ) : (
               <div key={`${clip.id}-frame-${index}`} className={`h-full flex-1 ${fallback}`} />
             ),
           )}
         </div>
       )}
-      <div className="pointer-events-none absolute inset-0 bg-gradient-to-r from-black/55 via-black/25 to-black/10" />
-      <span className="relative z-10 truncate px-2 drop-shadow">{clip.source_path.split("/").pop()}</span>
+      <div className="pointer-events-none absolute inset-0 bg-gradient-to-r from-black/25 via-transparent to-black/10" />
       <button
         type="button"
         className="relative z-10 ml-auto rounded p-1 hover:bg-black/30"

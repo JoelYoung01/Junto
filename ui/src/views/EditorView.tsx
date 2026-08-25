@@ -8,11 +8,12 @@ import {
   ExportSettings,
   invokeErrorMessage,
   PreviewFrame,
-  ScannedMediaFile,
+  ProjectEntry,
   Timeline,
   Track,
 } from "@/api";
-import { TimelineClip } from "@/components/TimelineClip";
+import { FileTree } from "@/components/FileTree";
+import { applyTrackHeightDelta, trackLaneHeight, TrackLane } from "@/components/TrackLane";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -26,8 +27,8 @@ import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
-
-const PIXELS_PER_SECOND = 80;
+import { pathBasename } from "@/lib/paths";
+import { PIXELS_PER_SECOND } from "@/lib/timelineLayout";
 
 interface EditorViewProps {
   onNewProject: () => void;
@@ -41,7 +42,7 @@ function trackLaneAtPoint(clientX: number, clientY: number): HTMLElement | null 
 
 export function EditorView({ onNewProject }: EditorViewProps) {
   const [project, setProject] = useState<{ name: string; root: string } | null>(null);
-  const [media, setMedia] = useState<ScannedMediaFile[]>([]);
+  const [projectEntries, setProjectEntries] = useState<ProjectEntry[]>([]);
   const [timeline, setTimeline] = useState<Timeline | null>(null);
   const [playing, setPlaying] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
@@ -49,6 +50,8 @@ export function EditorView({ onNewProject }: EditorViewProps) {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [exportProgress, setExportProgress] = useState<ExportProgress | null>(null);
   const [draggingClipId, setDraggingClipId] = useState<string | null>(null);
+  const [trackHeights, setTrackHeights] = useState<Record<string, number>>({});
+  const [resizingTracks, setResizingTracks] = useState(false);
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [preview, setPreview] = useState<PreviewFrame | null>(null);
@@ -61,17 +64,22 @@ export function EditorView({ onNewProject }: EditorViewProps) {
   const previewRequest = useRef(0);
 
   const refresh = useCallback(async () => {
-    const [current, files, state, settings] = await Promise.all([
+    const [current, state, settings] = await Promise.all([
       api.getCurrentProject(),
-      api.listMedia(),
       api.getTimeline(),
       api.getExportSettings(),
     ]);
     if (current) setProject({ name: current.name, root: current.root });
-    setMedia(files);
     setTimeline(state);
     setExportSettings(settings);
     if (state) playheadRef.current = state.playhead;
+
+    try {
+      const files = await api.listProjectEntries();
+      setProjectEntries(files);
+    } catch (err) {
+      setError(invokeErrorMessage(err));
+    }
   }, []);
 
   const loadPhotoDefault = useCallback(async () => {
@@ -86,9 +94,13 @@ export function EditorView({ onNewProject }: EditorViewProps) {
   useEffect(() => {
     void refresh();
     void loadPhotoDefault();
-    const unlistenPromise = api.onExportProgress((progress) => setExportProgress(progress));
+    const unlistenExport = api.onExportProgress((progress) => setExportProgress(progress));
+    const unlistenFootage = api.onRawFootageChanged(() => {
+      void api.listProjectEntries().then(setProjectEntries).catch(() => {});
+    });
     return () => {
-      void unlistenPromise.then((unlisten) => unlisten());
+      void unlistenExport.then((unlisten) => unlisten());
+      void unlistenFootage.then((unlisten) => unlisten());
     };
   }, [refresh, loadPhotoDefault]);
 
@@ -144,11 +156,11 @@ export function EditorView({ onNewProject }: EditorViewProps) {
     if (!timeline) return;
     const playhead = timeline.playhead;
     const requestId = ++previewRequest.current;
-    const width = playing ? 320 : 640;
+    const maxHeight = playing ? 180 : 360;
     const delay = playing ? 50 : 0;
     const handle = window.setTimeout(() => {
       void api
-        .getPreviewFrame(playhead, width)
+        .getPreviewFrame(playhead, maxHeight)
         .then((frame) => {
           if (requestId === previewRequest.current) {
             setPreview(frame);
@@ -166,13 +178,15 @@ export function EditorView({ onNewProject }: EditorViewProps) {
     const sourcePath = event.dataTransfer.getData("text/plain");
     if (!sourcePath || !timeline) return;
 
-    const file = media.find((m) => m.relative_path === sourcePath);
-    if (file) {
+    const entry = projectEntries.find(
+      (e) => e.relative_path === sourcePath && e.entry_kind === "file" && e.media_kind,
+    );
+    if (entry?.media_kind) {
       const compatible =
-        (track.kind === "audio" && file.media_kind === "audio") ||
-        (track.kind === "video" && file.media_kind !== "audio");
+        (track.kind === "audio" && entry.media_kind === "audio") ||
+        (track.kind === "video" && entry.media_kind !== "audio");
       if (!compatible) {
-        setError(`Cannot place ${file.media_kind} media on a ${track.kind} track.`);
+        setError(`Cannot place ${entry.media_kind} media on a ${track.kind} track.`);
         return;
       }
     }
@@ -236,9 +250,9 @@ export function EditorView({ onNewProject }: EditorViewProps) {
     setTimeline((prev) => (prev ? { ...prev, playhead: position } : prev));
   }
 
-  async function addMediaToTimeline(file: ScannedMediaFile) {
+  async function addMediaToTimeline(relativePath: string, mediaKind: "video" | "image" | "audio") {
     if (!timeline) return;
-    const preferredKind = file.media_kind === "audio" ? "audio" : "video";
+    const preferredKind = mediaKind === "audio" ? "audio" : "video";
     const track =
       timeline.tracks.find((t) => t.kind === preferredKind) ?? timeline.tracks[0];
     if (!track) {
@@ -251,7 +265,7 @@ export function EditorView({ onNewProject }: EditorViewProps) {
       0,
     );
     try {
-      await api.addClipToTimeline(track.id, file.relative_path, start);
+      await api.addClipToTimeline(track.id, relativePath, start);
       await refresh();
       setError(null);
     } catch (err) {
@@ -380,40 +394,12 @@ export function EditorView({ onNewProject }: EditorViewProps) {
             </div>
           </div>
           <ScrollArea className="h-[calc(100%-4.5rem)] pr-3">
-            <div className="space-y-2">
-              {media.map((file) => (
-                <div
-                  key={file.relative_path}
-                  className="rounded-md border border-transparent px-2 py-2 text-sm hover:border-border hover:bg-muted/40"
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <div
-                      className="min-w-0 cursor-grab"
-                      draggable
-                      onDragStart={(e) => e.dataTransfer.setData("text/plain", file.relative_path)}
-                    >
-                      <p className="truncate font-medium">{file.relative_path.split("/").pop()}</p>
-                      <p className="text-xs capitalize text-muted-foreground">{file.media_kind}</p>
-                    </div>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-7 shrink-0 px-2"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        void addMediaToTimeline(file);
-                      }}
-                    >
-                      Add
-                    </Button>
-                  </div>
-                </div>
-              ))}
-              {media.length === 0 && (
-                <p className="text-sm text-muted-foreground">No media in Raw Footage yet.</p>
-              )}
-            </div>
+            <FileTree
+              entries={projectEntries}
+              onAddMedia={(relativePath, mediaKind) =>
+                void addMediaToTimeline(relativePath, mediaKind)
+              }
+            />
           </ScrollArea>
         </aside>
 
@@ -437,54 +423,42 @@ export function EditorView({ onNewProject }: EditorViewProps) {
             />
           </div>
 
-          <ScrollArea className="min-h-0 flex-1">
+          <div className={`min-h-0 flex-1 overflow-auto overscroll-contain ${resizingTracks ? "select-none" : ""}`}>
             <div
               style={{ width: duration * PIXELS_PER_SECOND + 120 }}
               onClick={() => setSelectedClipId(null)}
             >
               {timeline.tracks.map((track) => (
-                <div key={track.id} className="mb-3 grid grid-cols-[110px_1fr] items-center gap-3">
-                  <div className="text-sm text-muted-foreground">
-                    {track.name}
-                    <span className="ml-1 text-[10px] uppercase opacity-70">{track.kind}</span>
-                  </div>
-                  <div
-                    data-track-id={track.id}
-                    data-track-kind={track.kind}
-                    className="relative h-16 rounded-lg border bg-muted/20"
-                    onDragOver={(e) => e.preventDefault()}
-                    onDrop={(e) => void handleDropOnTrack(track, e)}
-                  >
-                    {timeline.clips
-                      .filter((clip) => clip.track_id === track.id)
-                      .map((clip) => (
-                        <TimelineClip
-                          key={clip.id}
-                          clip={clip}
-                          selected={clip.id === selectedClipId}
-                          onSelect={() => setSelectedClipId(clip.id)}
-                          onDragStart={() => setDraggingClipId(clip.id)}
-                          onDragEnd={(e) => void onClipDragEnd(clip, e)}
-                          onRemove={() =>
-                            void api
-                              .removeTimelineClip(clip.id)
-                              .then(refresh)
-                              .then(() => {
-                                if (selectedClipId === clip.id) setSelectedClipId(null);
-                              })
-                              .catch((err) => setError(invokeErrorMessage(err)))
-                          }
-                        />
-                      ))}
-                    <div
-                      className="pointer-events-none absolute top-0 bottom-0 z-20 w-0.5 bg-rose-500"
-                      style={{ left: timeline.playhead * PIXELS_PER_SECOND }}
-                    />
-                  </div>
-                </div>
+                <TrackLane
+                  key={track.id}
+                  track={track}
+                  clips={timeline.clips.filter((clip) => clip.track_id === track.id)}
+                  laneHeight={trackLaneHeight(trackHeights, track.id)}
+                  playhead={timeline.playhead}
+                  selectedClipId={selectedClipId}
+                  onResize={(trackId, deltaY) =>
+                    setTrackHeights((prev) => applyTrackHeightDelta(prev, trackId, deltaY))
+                  }
+                  onResizeStart={() => setResizingTracks(true)}
+                  onResizeEnd={() => setResizingTracks(false)}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={(e) => void handleDropOnTrack(track, e)}
+                  onSelectClip={setSelectedClipId}
+                  onClipDragStart={setDraggingClipId}
+                  onClipDragEnd={(clip, e) => void onClipDragEnd(clip, e)}
+                  onRemoveClip={(clipId) =>
+                    void api
+                      .removeTimelineClip(clipId)
+                      .then(refresh)
+                      .then(() => {
+                        if (selectedClipId === clipId) setSelectedClipId(null);
+                      })
+                      .catch((err) => setError(invokeErrorMessage(err)))
+                  }
+                />
               ))}
             </div>
-          </ScrollArea>
+          </div>
         </main>
 
         <aside className="min-h-0 overflow-auto border-l p-4">
@@ -493,8 +467,8 @@ export function EditorView({ onNewProject }: EditorViewProps) {
             {preview?.data_url ? (
               <img
                 src={preview.data_url}
-                alt={preview.source_path.split("/").pop() ?? "preview"}
-                className="h-full w-full object-contain"
+                alt="Preview frame"
+                className="max-h-full max-w-full object-contain"
               />
             ) : (
               <p className="px-3 text-center text-sm text-muted-foreground">
@@ -505,7 +479,6 @@ export function EditorView({ onNewProject }: EditorViewProps) {
             )}
             <div className="pointer-events-none absolute bottom-2 left-2 rounded bg-black/60 px-2 py-0.5 text-[10px] text-white">
               {timeline.playhead.toFixed(1)}s
-              {preview?.source_path ? ` · ${preview.source_path.split("/").pop()}` : ""}
             </div>
           </div>
 
@@ -516,9 +489,7 @@ export function EditorView({ onNewProject }: EditorViewProps) {
             {selectedClip ? (
               <div className="space-y-3 text-sm">
                 <div>
-                  <p className="truncate font-medium">
-                    {selectedClip.source_path.split("/").pop()}
-                  </p>
+                  <p className="truncate font-medium">{pathBasename(selectedClip.source_path)}</p>
                   <p className="text-xs capitalize text-muted-foreground">
                     {selectedClip.media_kind} · start {selectedClip.start.toFixed(2)}s
                   </p>

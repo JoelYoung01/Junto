@@ -25,6 +25,13 @@ export interface ScannedMediaFile {
   media_kind: "video" | "image" | "audio";
 }
 
+export interface ProjectEntry {
+  relative_path: string;
+  name: string;
+  entry_kind: "directory" | "file";
+  media_kind?: "video" | "image" | "audio" | null;
+}
+
 export interface ProjectSummary {
   name: string;
   root: string;
@@ -80,7 +87,6 @@ export interface PreviewFrame {
 
 export interface McpInfo {
   url: string;
-  tools_url: string;
   health_url: string;
 }
 
@@ -94,6 +100,7 @@ export const api = {
   getAppConfig: () => invoke<AppConfig>("get_app_config"),
   completeSetup: () => invoke<void>("complete_setup"),
   getMcpInfo: () => invoke<McpInfo>("get_mcp_info"),
+  checkMcpHealth: () => invoke<boolean>("check_mcp_health"),
   scanDirectory: (path: string) => invoke<DirectoryScan>("scan_directory", { path }),
   createProject: (path: string, name: string) =>
     invoke<ProjectSummary>("create_project", { path, name }),
@@ -102,6 +109,7 @@ export const api = {
   importFootage: (sourcePath: string) => invoke<string[]>("import_footage", { sourcePath }),
   consolidateFootage: () => invoke<string[]>("consolidate_footage"),
   listMedia: () => invoke<ScannedMediaFile[]>("list_media"),
+  listProjectEntries: () => invoke<ProjectEntry[]>("list_project_entries"),
   getTimeline: () => invoke<Timeline>("get_timeline"),
   addClipToTimeline: (trackId: string, sourcePath: string, start: number, duration?: number) =>
     invoke<string>("add_clip_to_timeline", { trackId, sourcePath, start, duration }),
@@ -125,12 +133,14 @@ export const api = {
   updateExportSettings: (settings: ExportSettings) =>
     invoke<void>("update_export_settings", { settings }),
   startExport: () => invoke<void>("start_export"),
-  getMediaFrame: (sourcePath: string, timeSeconds?: number, maxWidth?: number) =>
-    invoke<string | null>("get_media_frame", { sourcePath, timeSeconds, maxWidth }),
-  getPreviewFrame: (playhead?: number, maxWidth?: number) =>
-    invoke<PreviewFrame | null>("get_preview_frame", { playhead, maxWidth }),
+  getMediaFrame: (sourcePath: string, timeSeconds?: number, maxHeight?: number) =>
+    invoke<string | null>("get_media_frame", { sourcePath, timeSeconds, maxHeight }),
+  getPreviewFrame: (playhead?: number, maxHeight?: number) =>
+    invoke<PreviewFrame | null>("get_preview_frame", { playhead, maxHeight }),
   onExportProgress: (handler: (progress: ExportProgress) => void) =>
     listen<ExportProgress>("export-progress", (event) => handler(event.payload)),
+  onRawFootageChanged: (handler: () => void) =>
+    listen("raw-footage-changed", () => handler()),
 };
 
 export async function pickDirectory(title: string) {
@@ -149,12 +159,33 @@ export async function pickFootageSource(title: string) {
   return selected;
 }
 
-export function mcpBundleInstructions(mcpUrl: string) {
+export type McpClient = "cursor" | "opencode";
+
+export function mcpConfigSnippet(mcpUrl: string, client: McpClient): string {
+  if (client === "cursor") {
+    return JSON.stringify(
+      {
+        mcpServers: {
+          junto: {
+            url: mcpUrl,
+          },
+        },
+      },
+      null,
+      2,
+    );
+  }
+
   return JSON.stringify(
     {
-      mcpServers: {
+      $schema: "https://opencode.ai/config.json",
+      mcp: {
         junto: {
+          type: "remote",
           url: mcpUrl,
+          oauth: false,
+          codemode: false,
+          timeout: 60000,
         },
       },
     },
@@ -162,7 +193,6 @@ export function mcpBundleInstructions(mcpUrl: string) {
     2,
   );
 }
-
 export async function copyText(text: string) {
   await navigator.clipboard.writeText(text);
 }
