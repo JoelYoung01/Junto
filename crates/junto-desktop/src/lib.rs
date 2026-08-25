@@ -22,6 +22,8 @@ pub struct AppState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub setup_complete: bool,
+    #[serde(default)]
+    pub last_project: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -63,6 +65,7 @@ fn create_project(path: String, name: String, state: State<'_, AppState>) -> Res
     let root = PathBuf::from(path);
     let project = Project::create(root, name).map_err(|e| e.to_string())?;
     let summary = project_summary(&project);
+    app_config::remember_project(&project.root).map_err(|e| e.to_string())?;
     *state.project.write().map_err(|e| e.to_string())? = Some(project);
     Ok(summary)
 }
@@ -72,6 +75,7 @@ fn open_project(path: String, state: State<'_, AppState>) -> Result<ProjectSumma
     let root = PathBuf::from(path);
     let project = Project::open(root).map_err(|e| e.to_string())?;
     let summary = project_summary(&project);
+    app_config::remember_project(&project.root).map_err(|e| e.to_string())?;
     *state.project.write().map_err(|e| e.to_string())? = Some(project);
     Ok(summary)
 }
@@ -171,8 +175,8 @@ fn remove_timeline_clip(clip_id: String, state: State<'_, AppState>) -> Result<(
 fn set_playhead(position: f64, state: State<'_, AppState>) -> Result<(), String> {
     let mut guard = state.project.write().map_err(|e| e.to_string())?;
     let project = guard.as_mut().ok_or_else(|| "no project open".to_string())?;
+    // Playhead is ephemeral UI state — avoid writing project.json on every tick.
     project.file.timeline.playhead = position.max(0.0);
-    project.save().map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -211,11 +215,22 @@ async fn start_export(app: AppHandle, state: State<'_, AppState>) -> Result<(), 
     let rx = {
         let guard = state.project.read().map_err(|e| e.to_string())?;
         let project = guard.as_ref().ok_or_else(|| "no project open".to_string())?;
+        tracing::info!(
+            "starting export for project {} ({} clips)",
+            project.root.display(),
+            project.file.timeline.clips.len()
+        );
         project.export_async()
     };
 
-    tauri::async_runtime::spawn(async move {
+    tauri::async_runtime::spawn_blocking(move || {
         while let Ok(progress) = rx.recv() {
+            tracing::info!(
+                "export progress: {}% {} {:?}",
+                (progress.progress * 100.0) as i32,
+                progress.message,
+                progress.output_path
+            );
             let _ = app.emit("export-progress", &progress);
             if progress.done {
                 break;
@@ -224,6 +239,121 @@ async fn start_export(app: AppHandle, state: State<'_, AppState>) -> Result<(), 
     });
 
     Ok(())
+}
+
+#[tauri::command]
+async fn get_media_frame(
+    source_path: String,
+    time_seconds: Option<f64>,
+    max_width: Option<u32>,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    let (root, abs) = {
+        let guard = state.project.read().map_err(|e| e.to_string())?;
+        let project = guard.as_ref().ok_or_else(|| "no project open".to_string())?;
+        let abs = project.resolve_path(&source_path);
+        (project.root.clone(), abs)
+    };
+    let kind = junto_core::MediaKind::from_path(&abs);
+    if matches!(kind, Some(junto_core::MediaKind::Audio) | None) {
+        return Ok(None);
+    }
+    let time = time_seconds.unwrap_or(0.0);
+    let width = max_width.unwrap_or(320);
+    let source_path_clone = source_path.clone();
+    let jpeg = tauri::async_runtime::spawn_blocking(move || {
+        junto_core::frame_jpeg_cached(&root, &source_path_clone, &abs, time, width)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    Ok(Some(format!(
+        "data:image/jpeg;base64,{}",
+        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, jpeg)
+    )))
+}
+
+#[tauri::command]
+async fn get_preview_frame(
+    playhead: Option<f64>,
+    max_width: Option<u32>,
+    state: State<'_, AppState>,
+) -> Result<Option<serde_json::Value>, String> {
+    let snapshot = {
+        let guard = state.project.read().map_err(|e| e.to_string())?;
+        let project = guard.as_ref().ok_or_else(|| "no project open".to_string())?;
+        let t = playhead.unwrap_or(project.file.timeline.playhead);
+        let width = max_width.unwrap_or(640);
+
+        let mut visual: Vec<_> = project
+            .file
+            .timeline
+            .clips
+            .iter()
+            .filter(|c| {
+                matches!(
+                    c.media_kind,
+                    junto_core::MediaKind::Video | junto_core::MediaKind::Image
+                )
+            })
+            .filter(|c| t + f64::EPSILON >= c.start && t <= c.start + c.duration + 0.05)
+            .cloned()
+            .collect();
+        visual.sort_by(|a, b| {
+            let track_a = project
+                .file
+                .timeline
+                .tracks
+                .iter()
+                .find(|tr| tr.id == a.track_id)
+                .map(|tr| tr.index)
+                .unwrap_or(0);
+            let track_b = project
+                .file
+                .timeline
+                .tracks
+                .iter()
+                .find(|tr| tr.id == b.track_id)
+                .map(|tr| tr.index)
+                .unwrap_or(0);
+            track_a.cmp(&track_b)
+        });
+
+        let Some(clip) = visual.into_iter().next() else {
+            return Ok(None);
+        };
+        let local = (t - clip.start + clip.source_offset).max(0.0);
+        let abs = project.resolve_path(&clip.source_path);
+        (
+            project.root.clone(),
+            clip.source_path,
+            clip.media_kind,
+            abs,
+            local,
+            width,
+            t,
+        )
+    };
+
+    let (root, source_path, media_kind, abs, local, width, t) = snapshot;
+    let jpeg = tauri::async_runtime::spawn_blocking(move || {
+        junto_core::frame_jpeg_cached(&root, &source_path, &abs, local, width)
+            .map(|jpeg| (jpeg, source_path, media_kind))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+
+    let (jpeg, source_path, media_kind) = jpeg;
+    Ok(Some(serde_json::json!({
+        "data_url": format!(
+            "data:image/jpeg;base64,{}",
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, jpeg)
+        ),
+        "source_path": source_path,
+        "media_kind": media_kind,
+        "playhead": t,
+    })))
 }
 
 fn project_summary(project: &Project) -> ProjectSummary {
@@ -240,6 +370,38 @@ pub fn run() {
         .init();
 
     let project: SharedProject = Arc::new(RwLock::new(None));
+
+    // Prefer explicit env override, then last opened project from config.
+    if let Some(path) = std::env::var_os("JUNTO_OPEN_PROJECT") {
+        let path = PathBuf::from(path);
+        match Project::open(path.clone()).or_else(|_| {
+            Project::create(
+                path.clone(),
+                path.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("Untitled Project")
+                    .to_string(),
+            )
+        }) {
+            Ok(opened) => {
+                let _ = app_config::remember_project(&opened.root);
+                tracing::info!("Opened project from JUNTO_OPEN_PROJECT: {}", opened.root.display());
+                *project.write().expect("project lock") = Some(opened);
+            }
+            Err(err) => tracing::warn!("JUNTO_OPEN_PROJECT failed: {err}"),
+        }
+    } else if let Ok(config) = app_config::load() {
+        if let Some(path) = config.last_project {
+            match Project::open(PathBuf::from(&path)) {
+                Ok(opened) => {
+                    tracing::info!("Reopened last project: {}", opened.root.display());
+                    *project.write().expect("project lock") = Some(opened);
+                }
+                Err(err) => tracing::warn!("Failed to reopen last project {path}: {err}"),
+            }
+        }
+    }
+
     let mcp_port = 7799u16;
     let mcp_project = Arc::clone(&project);
 
@@ -275,6 +437,8 @@ pub fn run() {
             get_export_settings,
             update_export_settings,
             start_export,
+            get_media_frame,
+            get_preview_frame,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Junto");

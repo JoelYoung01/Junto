@@ -16,6 +16,7 @@ authors = ["Junto Contributors"]
 [workspace.dependencies]
 anyhow = "1"
 axum = { version = "0.8", features = ["json"] }
+base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "6"
 serde = { version = "1", features = ["derive"] }

@@ -1,22 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  Download,
-  FolderPlus,
-  Pause,
-  Play,
-  Plus,
-  Trash2,
-} from "lucide-react";
+import { Pause, Play, Plus } from "lucide-react";
 
 import {
   api,
   Clip,
   ExportProgress,
   ExportSettings,
+  PreviewFrame,
   ScannedMediaFile,
   Timeline,
   Track,
 } from "@/api";
+import { TimelineClip } from "@/components/TimelineClip";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -48,7 +43,11 @@ export function EditorView({ onNewProject }: EditorViewProps) {
   const [exportProgress, setExportProgress] = useState<ExportProgress | null>(null);
   const [draggingClipId, setDraggingClipId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [preview, setPreview] = useState<PreviewFrame | null>(null);
   const playTimer = useRef<number | null>(null);
+  const playheadRef = useRef(0);
+  const durationRef = useRef(10);
+  const previewRequest = useRef(0);
 
   const refresh = useCallback(async () => {
     const [current, files, state, settings] = await Promise.all([
@@ -61,6 +60,7 @@ export function EditorView({ onNewProject }: EditorViewProps) {
     setMedia(files);
     setTimeline(state);
     setExportSettings(settings);
+    if (state) playheadRef.current = state.playhead;
   }, []);
 
   useEffect(() => {
@@ -72,19 +72,51 @@ export function EditorView({ onNewProject }: EditorViewProps) {
   }, [refresh]);
 
   useEffect(() => {
-    if (!playing || !timeline) return;
+    if (!playing) return;
     playTimer.current = window.setInterval(() => {
-      void api.setPlayhead(timeline.playhead + 0.1).then(() => void refresh());
+      const next = Math.min(durationRef.current, playheadRef.current + 0.1);
+      playheadRef.current = next;
+      void api.setPlayhead(next).then(() => {
+        setTimeline((prev) => (prev ? { ...prev, playhead: next } : prev));
+      });
+      if (next >= durationRef.current) {
+        setPlaying(false);
+      }
     }, 100);
     return () => {
       if (playTimer.current) window.clearInterval(playTimer.current);
     };
-  }, [playing, timeline, refresh]);
+  }, [playing]);
 
   const duration = useMemo(() => {
     if (!timeline) return 10;
     return Math.max(10, ...timeline.clips.map((clip) => clip.start + clip.duration));
   }, [timeline]);
+
+  useEffect(() => {
+    durationRef.current = duration;
+  }, [duration]);
+
+  useEffect(() => {
+    if (!timeline) return;
+    const playhead = timeline.playhead;
+    const requestId = ++previewRequest.current;
+    const width = playing ? 320 : 640;
+    const delay = playing ? 50 : 0;
+    const handle = window.setTimeout(() => {
+      void api
+        .getPreviewFrame(playhead, width)
+        .then((frame) => {
+          if (requestId === previewRequest.current) {
+            setPreview(frame);
+          }
+        })
+        .catch(() => {
+          /* keep last good frame while seeking */
+        });
+    }, delay);
+    return () => window.clearTimeout(handle);
+  }, [timeline?.playhead, playing, timeline]);
 
   async function handleDropOnTrack(track: Track, event: React.DragEvent<HTMLDivElement>) {
     event.preventDefault();
@@ -132,15 +164,48 @@ export function EditorView({ onNewProject }: EditorViewProps) {
 
   async function scrub(event: React.MouseEvent<HTMLDivElement>) {
     const rect = event.currentTarget.getBoundingClientRect();
-    const x = event.clientX - rect.left;
-    const position = Math.max(0, Math.min(duration, x / PIXELS_PER_SECOND));
+    const ratio = rect.width > 0 ? (event.clientX - rect.left) / rect.width : 0;
+    const position = Math.max(0, Math.min(duration, ratio * duration));
+    playheadRef.current = position;
     await api.setPlayhead(position);
-    await refresh();
+    setTimeline((prev) => (prev ? { ...prev, playhead: position } : prev));
+  }
+
+  async function addMediaToTimeline(file: ScannedMediaFile) {
+    if (!timeline) return;
+    const preferredKind = file.media_kind === "audio" ? "audio" : "video";
+    const track =
+      timeline.tracks.find((t) => t.kind === preferredKind) ?? timeline.tracks[0];
+    if (!track) {
+      setError("No timeline track available.");
+      return;
+    }
+    const clipsOnTrack = timeline.clips.filter((clip) => clip.track_id === track.id);
+    const start = clipsOnTrack.reduce(
+      (max, clip) => Math.max(max, clip.start + clip.duration),
+      0,
+    );
+    try {
+      await api.addClipToTimeline(track.id, file.relative_path, start);
+      await refresh();
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
   }
 
   async function startExport() {
     setExportProgress({ done: false, progress: 0, message: "Starting export..." });
-    await api.startExport();
+    try {
+      await api.startExport();
+    } catch (err) {
+      setExportProgress({
+        done: true,
+        progress: 0,
+        message: "Export failed",
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   if (!timeline || !project) {
@@ -148,26 +213,30 @@ export function EditorView({ onNewProject }: EditorViewProps) {
   }
 
   return (
-    <div className="grid min-h-screen grid-rows-[auto_1fr_auto]">
-      <header className="flex items-center justify-between border-b px-4 py-3">
-        <div>
-          <h1 className="text-lg font-semibold">{project.name}</h1>
-          <p className="text-xs text-muted-foreground">{project.root}</p>
+    <div className="flex h-screen flex-col overflow-hidden bg-background">
+      <header className="flex shrink-0 items-center justify-between gap-4 border-b px-4 py-3">
+        <div className="min-w-0 flex-1">
+          <h1 className="truncate text-lg font-semibold">{project.name}</h1>
+          <p className="truncate text-xs text-muted-foreground">{project.root}</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-2">
           <Button variant="outline" onClick={onNewProject}>
-            <FolderPlus className="h-4 w-4" />
             New project
           </Button>
-          <Button onClick={() => setExportOpen(true)}>
-            <Download className="h-4 w-4" />
+          <Button
+            onClick={() => {
+              setExportProgress(null);
+              setExportOpen(true);
+              void startExport();
+            }}
+          >
             Export
           </Button>
         </div>
       </header>
 
-      <div className="grid min-h-0 grid-cols-[260px_1fr_320px]">
-        <aside className="border-r p-4">
+      <div className="grid min-h-0 flex-1 grid-cols-[260px_minmax(0,1fr)_300px] overflow-hidden">
+        <aside className="min-h-0 overflow-hidden border-r p-4">
           <div className="mb-3 flex items-center justify-between">
             <h2 className="text-sm font-medium">Filesystem</h2>
             <Button size="sm" variant="outline" onClick={() => void api.addTrack("video").then(refresh)}>
@@ -175,17 +244,35 @@ export function EditorView({ onNewProject }: EditorViewProps) {
               Track
             </Button>
           </div>
-          <ScrollArea className="h-[calc(100vh-220px)] pr-3">
+          <ScrollArea className="h-[calc(100%-2.5rem)] pr-3">
             <div className="space-y-2">
               {media.map((file) => (
                 <div
                   key={file.relative_path}
-                  draggable
-                  onDragStart={(e) => e.dataTransfer.setData("text/plain", file.relative_path)}
-                  className="cursor-grab rounded-md border border-transparent px-2 py-2 text-sm hover:border-border hover:bg-muted/40"
+                  className="rounded-md border border-transparent px-2 py-2 text-sm hover:border-border hover:bg-muted/40"
                 >
-                  <p className="truncate font-medium">{file.relative_path.split("/").pop()}</p>
-                  <p className="text-xs capitalize text-muted-foreground">{file.media_kind}</p>
+                  <div className="flex items-start justify-between gap-2">
+                    <div
+                      className="min-w-0 cursor-grab"
+                      draggable
+                      onDragStart={(e) => e.dataTransfer.setData("text/plain", file.relative_path)}
+                    >
+                      <p className="truncate font-medium">{file.relative_path.split("/").pop()}</p>
+                      <p className="text-xs capitalize text-muted-foreground">{file.media_kind}</p>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 shrink-0 px-2"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        void addMediaToTimeline(file);
+                      }}
+                    >
+                      Add
+                    </Button>
+                  </div>
                 </div>
               ))}
               {media.length === 0 && (
@@ -195,7 +282,7 @@ export function EditorView({ onNewProject }: EditorViewProps) {
           </ScrollArea>
         </aside>
 
-        <main className="flex min-h-0 flex-col p-4">
+        <main className="flex min-h-0 min-w-0 flex-col overflow-hidden p-4">
           <div className="mb-4 flex items-center gap-2">
             <Button size="icon" variant="outline" onClick={() => void togglePlay()}>
               {playing ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
@@ -215,7 +302,7 @@ export function EditorView({ onNewProject }: EditorViewProps) {
             />
           </div>
 
-          <ScrollArea className="flex-1">
+          <ScrollArea className="min-h-0 flex-1">
             <div style={{ width: duration * PIXELS_PER_SECOND + 120 }}>
               {timeline.tracks.map((track) => (
                 <div key={track.id} className="mb-3 grid grid-cols-[110px_1fr] items-center gap-3">
@@ -228,34 +315,16 @@ export function EditorView({ onNewProject }: EditorViewProps) {
                     {timeline.clips
                       .filter((clip) => clip.track_id === track.id)
                       .map((clip) => (
-                        <div
+                        <TimelineClip
                           key={clip.id}
-                          className={`absolute top-2 flex h-12 items-center rounded-md px-2 text-xs text-white ${
-                            clip.media_kind === "audio"
-                              ? "bg-amber-600"
-                              : clip.media_kind === "image"
-                                ? "bg-emerald-600"
-                                : "bg-blue-600"
-                          }`}
-                          style={{
-                            left: clip.start * PIXELS_PER_SECOND,
-                            width: clip.duration * PIXELS_PER_SECOND,
-                          }}
-                          draggable
+                          clip={clip}
                           onDragStart={() => setDraggingClipId(clip.id)}
                           onDragEnd={(e) => void onClipDragEnd(clip, e)}
-                        >
-                          <span className="truncate">{clip.source_path.split("/").pop()}</span>
-                          <button
-                            className="ml-auto rounded p-1 hover:bg-black/20"
-                            onClick={() => void api.removeTimelineClip(clip.id).then(refresh)}
-                          >
-                            <Trash2 className="h-3 w-3" />
-                          </button>
-                        </div>
+                          onRemove={() => void api.removeTimelineClip(clip.id).then(refresh)}
+                        />
                       ))}
                     <div
-                      className="pointer-events-none absolute top-0 bottom-0 w-0.5 bg-rose-500"
+                      className="pointer-events-none absolute top-0 bottom-0 z-20 w-0.5 bg-rose-500"
                       style={{ left: timeline.playhead * PIXELS_PER_SECOND }}
                     />
                   </div>
@@ -265,10 +334,26 @@ export function EditorView({ onNewProject }: EditorViewProps) {
           </ScrollArea>
         </main>
 
-        <aside className="border-l p-4">
+        <aside className="min-h-0 overflow-auto border-l p-4">
           <h2 className="mb-3 text-sm font-medium">Preview</h2>
-          <div className="flex aspect-video items-center justify-center rounded-lg border bg-black/40 text-sm text-muted-foreground">
-            Preview at {timeline.playhead.toFixed(1)}s
+          <div className="relative flex aspect-video items-center justify-center overflow-hidden rounded-lg border bg-black">
+            {preview?.data_url ? (
+              <img
+                src={preview.data_url}
+                alt={preview.source_path.split("/").pop() ?? "preview"}
+                className="h-full w-full object-contain"
+              />
+            ) : (
+              <p className="px-3 text-center text-sm text-muted-foreground">
+                {timeline.clips.some((c) => c.media_kind !== "audio")
+                  ? `No visual clip at ${timeline.playhead.toFixed(1)}s`
+                  : "Add a video or image clip to preview"}
+              </p>
+            )}
+            <div className="pointer-events-none absolute bottom-2 left-2 rounded bg-black/60 px-2 py-0.5 text-[10px] text-white">
+              {timeline.playhead.toFixed(1)}s
+              {preview?.source_path ? ` · ${preview.source_path.split("/").pop()}` : ""}
+            </div>
           </div>
           <Separator className="my-4" />
           <p className="text-xs text-muted-foreground">
@@ -278,8 +363,21 @@ export function EditorView({ onNewProject }: EditorViewProps) {
         </aside>
       </div>
 
-      <Dialog open={exportOpen} onOpenChange={setExportOpen}>
-        <DialogContent>
+      <Dialog
+        open={exportOpen}
+        onOpenChange={(open) => {
+          setExportOpen(open);
+          if (open) setExportProgress(null);
+        }}
+      >
+        <DialogContent
+          onPointerDownOutside={(e) => {
+            if (exportProgress && !exportProgress.done) e.preventDefault();
+          }}
+          onInteractOutside={(e) => {
+            if (exportProgress && !exportProgress.done) e.preventDefault();
+          }}
+        >
           <DialogHeader>
             <DialogTitle>Export video</DialogTitle>
             <DialogDescription>
@@ -360,9 +458,29 @@ export function EditorView({ onNewProject }: EditorViewProps) {
 
           <DialogFooter>
             <Button
-              onClick={async () => {
-                if (exportSettings) await api.updateExportSettings(exportSettings);
-                await startExport();
+              type="button"
+              onPointerDown={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+              }}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                void (async () => {
+                  try {
+                    if (exportSettings) {
+                      await api.updateExportSettings(exportSettings);
+                    }
+                    await startExport();
+                  } catch (err) {
+                    setExportProgress({
+                      done: true,
+                      progress: 0,
+                      message: "Export failed",
+                      error: err instanceof Error ? err.message : String(err),
+                    });
+                  }
+                })();
               }}
               disabled={exportProgress !== null && !exportProgress.done && !exportProgress.error}
             >
