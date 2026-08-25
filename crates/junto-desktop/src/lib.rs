@@ -218,7 +218,7 @@ async fn start_export(app: AppHandle, state: State<'_, AppState>) -> Result<(), 
         project.export_async()
     };
 
-    tauri::async_runtime::spawn(async move {
+    tauri::async_runtime::spawn_blocking(move || {
         while let Ok(progress) = rx.recv() {
             let _ = app.emit("export-progress", &progress);
             if progress.done {

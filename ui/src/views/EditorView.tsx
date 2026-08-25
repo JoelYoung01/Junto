@@ -175,7 +175,16 @@ export function EditorView({ onNewProject }: EditorViewProps) {
 
   async function startExport() {
     setExportProgress({ done: false, progress: 0, message: "Starting export..." });
-    await api.startExport();
+    try {
+      await api.startExport();
+    } catch (err) {
+      setExportProgress({
+        done: true,
+        progress: 0,
+        message: "Export failed",
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   if (!timeline || !project) {
@@ -193,7 +202,12 @@ export function EditorView({ onNewProject }: EditorViewProps) {
           <Button variant="outline" onClick={onNewProject}>
             New project
           </Button>
-          <Button onClick={() => setExportOpen(true)}>Export</Button>
+          <Button onClick={() => {
+            setExportProgress(null);
+            setExportOpen(true);
+          }}>
+            Export
+          </Button>
         </div>
       </header>
 
