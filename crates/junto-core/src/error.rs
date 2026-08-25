@@ -12,6 +12,8 @@ pub enum JuntoError {
     Timeline(String),
     #[error("export error: {0}")]
     Export(String),
+    #[error("media probe error: {0}")]
+    Probe(String),
     #[error("clip not found: {0}")]
     ClipNotFound(String),
     #[error("track not found: {0}")]
