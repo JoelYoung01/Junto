@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 use junto_core::{
@@ -17,6 +18,7 @@ pub use app_config::{load as load_app_config, save as save_app_config};
 pub struct AppState {
     pub project: SharedProject,
     pub mcp_port: u16,
+    pub export_running: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,7 +137,9 @@ fn add_clip_to_timeline(
         .ok_or_else(|| "unsupported media file".to_string())?;
     let duration = match duration {
         Some(d) => d,
-        None => project.duration_for_media(&source_path, media_kind),
+        None => project
+            .duration_for_media(&source_path, media_kind)
+            .map_err(|e| e.to_string())?,
     };
     let clip_id = project
         .file
@@ -279,6 +283,15 @@ fn update_export_settings(settings: ExportSettings, state: State<'_, AppState>) 
 
 #[tauri::command]
 async fn start_export(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    if state
+        .export_running
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Err("export already in progress".into());
+    }
+
+    let export_running = Arc::clone(&state.export_running);
     let rx = {
         let guard = state.project.read().map_err(|e| e.to_string())?;
         let project = guard.as_ref().ok_or_else(|| "no project open".to_string())?;
@@ -303,6 +316,7 @@ async fn start_export(app: AppHandle, state: State<'_, AppState>) -> Result<(), 
                 break;
             }
         }
+        export_running.store(false, Ordering::SeqCst);
     });
 
     Ok(())
@@ -483,7 +497,11 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
-        .manage(AppState { project, mcp_port })
+        .manage(AppState {
+            project,
+            mcp_port,
+            export_running: Arc::new(AtomicBool::new(false)),
+        })
         .invoke_handler(tauri::generate_handler![
             get_app_config,
             complete_setup,

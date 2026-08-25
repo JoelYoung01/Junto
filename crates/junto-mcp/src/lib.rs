@@ -131,7 +131,9 @@ fn execute_tool(project: SharedProject, req: ToolCallRequest) -> Result<ToolCall
             let start: f64 = args.get("start").and_then(|v| v.as_f64()).unwrap_or(0.0);
             let duration = match args.get("duration").and_then(|v| v.as_f64()) {
                 Some(d) => d,
-                None => project.duration_for_media(&source_path, media_kind),
+                None => project
+                    .duration_for_media(&source_path, media_kind)
+                    .map_err(|e| e.to_string())?,
             };
             let id = project
                 .file
@@ -222,7 +224,6 @@ fn execute_tool(project: SharedProject, req: ToolCallRequest) -> Result<ToolCall
         "set_playhead" => {
             let position: f64 = parse_arg(&args, "position")?;
             project.file.timeline.playhead = position.max(0.0);
-            project.save().map_err(|e| e.to_string())?;
             json!({ "playhead": project.file.timeline.playhead }).to_string()
         }
         "export_video" => {

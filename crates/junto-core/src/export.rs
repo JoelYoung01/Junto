@@ -2,6 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use uuid::Uuid;
+
 use crate::error::{JuntoError, Result};
 use crate::media::MediaKind;
 use crate::paths::outputs_dir;
@@ -9,6 +11,18 @@ use crate::project::{ExportProgress, ExportSettings, Project};
 use crate::timeline::{Clip, Timeline, TrackKind};
 
 const EPS: f64 = 1e-6;
+
+struct TempDirGuard(PathBuf);
+
+impl Drop for TempDirGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+fn escape_concat_path(path: &Path) -> String {
+    path.display().to_string().replace('\'', "'\\''")
+}
 
 #[derive(Debug, Clone)]
 enum VisualPiece {
@@ -38,8 +52,13 @@ pub fn export_timeline_blocking(
     let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
     let output = outputs_dir(&project.root).join(format!("export_{timestamp}.mp4"));
 
-    let temp_dir = project.root.join(".junto").join("export_tmp");
+    let temp_dir = project
+        .root
+        .join(".junto")
+        .join("export_tmp")
+        .join(Uuid::new_v4().to_string());
     fs::create_dir_all(&temp_dir)?;
+    let _temp_guard = TempDirGuard(temp_dir.clone());
 
     let report = |progress: f32, message: &str| {
         if let Some(cb) = on_progress {
@@ -96,8 +115,6 @@ pub fn export_timeline_blocking(
         mux_video_audio(&video_only, &mixed_audio, &output, settings, total)?;
         output
     };
-
-    let _ = fs::remove_dir_all(&temp_dir);
 
     if let Some(cb) = on_progress {
         cb(ExportProgress {
@@ -240,30 +257,41 @@ fn render_visual_piece(
                 )));
             }
             match clip.media_kind {
-                MediaKind::Image => Command::new("ffmpeg")
-                    .args([
-                        "-y",
-                        "-loop",
-                        "1",
-                        "-i",
-                        &source.to_string_lossy(),
-                        "-t",
-                        &duration.max(0.1).to_string(),
-                        "-vf",
-                        &vf,
-                        "-r",
-                        &settings.fps.to_string(),
-                        "-c:v",
-                        &settings.video_codec,
-                        "-pix_fmt",
-                        "yuv420p",
-                        "-an",
-                        &seg.to_string_lossy(),
-                    ])
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status()
-                    .map_err(|e| JuntoError::Export(e.to_string()))?,
+                MediaKind::Image => {
+                    let mut args = vec![
+                        "-y".to_string(),
+                        "-loop".to_string(),
+                        "1".to_string(),
+                    ];
+                    if *source_time > EPS {
+                        args.extend([
+                            "-ss".to_string(),
+                            source_time.max(0.0).to_string(),
+                        ]);
+                    }
+                    args.extend([
+                        "-i".to_string(),
+                        source.to_string_lossy().into(),
+                        "-t".to_string(),
+                        duration.max(0.1).to_string(),
+                        "-vf".to_string(),
+                        vf.clone(),
+                        "-r".to_string(),
+                        settings.fps.to_string(),
+                        "-c:v".to_string(),
+                        settings.video_codec.clone(),
+                        "-pix_fmt".to_string(),
+                        "yuv420p".to_string(),
+                        "-an".to_string(),
+                        seg.to_string_lossy().into(),
+                    ]);
+                    Command::new("ffmpeg")
+                        .args(&args)
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .status()
+                        .map_err(|e| JuntoError::Export(e.to_string()))?
+                }
                 MediaKind::Video => Command::new("ffmpeg")
                     .args([
                         "-y",
@@ -311,7 +339,7 @@ fn concat_video_segments(
     let list_file = output.with_extension("txt");
     let mut list_contents = String::new();
     for seg in segments {
-        list_contents.push_str(&format!("file '{}'\n", seg.display()));
+        list_contents.push_str(&format!("file '{}'\n", escape_concat_path(seg)));
     }
     fs::write(&list_file, list_contents)?;
 

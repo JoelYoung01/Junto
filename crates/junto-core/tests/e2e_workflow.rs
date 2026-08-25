@@ -231,7 +231,9 @@ fn duration_for_media_probes_video() {
     let mut project = Project::create(project_root, "Probe".into()).expect("create");
     let imported = project.import_footage(&video_path).expect("import");
 
-    let probed = project.duration_for_media(&imported[0], MediaKind::Video);
+    let probed = project
+        .duration_for_media(&imported[0], MediaKind::Video)
+        .expect("duration_for_media");
     assert!(
         (probed - 3.0).abs() < 0.25,
         "expected ~3s probed duration, got {probed}"
@@ -240,8 +242,58 @@ fn duration_for_media_probes_video() {
     let img = temp.path().join("p.jpg");
     generate_test_image(&img);
     let img_imp = project.import_footage(&img).expect("import img");
-    let img_dur = project.duration_for_media(&img_imp[0], MediaKind::Image);
+    let img_dur = project
+        .duration_for_media(&img_imp[0], MediaKind::Image)
+        .expect("image duration");
     assert_eq!(img_dur, project.file.photo_default_duration);
+}
+
+#[test]
+fn export_respects_video_trim() {
+    let temp = TempDir::new().expect("temp dir");
+    let video_path = temp.path().join("clip.mp4");
+    generate_test_video(&video_path, 5.0);
+
+    let project_root = temp.path().join("project");
+    let mut project = Project::create(project_root, "Trim Export".into()).expect("create");
+    let imported = project.import_footage(&video_path).expect("import");
+
+    let vtrack = project
+        .file
+        .timeline
+        .tracks
+        .iter()
+        .find(|t| t.kind == TrackKind::Video)
+        .unwrap()
+        .id;
+
+    let clip_id = project
+        .file
+        .timeline
+        .add_clip(
+            vtrack,
+            imported[0].clone(),
+            MediaKind::Video,
+            0.0,
+            5.0,
+        )
+        .expect("add clip");
+    project
+        .file
+        .timeline
+        .trim_clip(clip_id, 1.0, 1.5)
+        .expect("trim");
+
+    project.file.export_settings.width = 320;
+    project.file.export_settings.height = 240;
+    project.file.export_settings.fps = 15;
+
+    let output = project.export_blocking().expect("export");
+    let dur = probe_out_duration(&output);
+    assert!(
+        (dur - 1.5).abs() < 0.4,
+        "trimmed export should be ~1.5s, got {dur}"
+    );
 }
 
 #[test]

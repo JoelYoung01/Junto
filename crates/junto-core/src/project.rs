@@ -148,12 +148,12 @@ impl Project {
     }
 
     /// Preferred duration when adding a clip from a known source path.
-    pub fn duration_for_media(&self, relative_path: &str, kind: MediaKind) -> f64 {
+    pub fn duration_for_media(&self, relative_path: &str, kind: MediaKind) -> Result<f64> {
         match kind {
-            MediaKind::Image => self.file.photo_default_duration,
+            MediaKind::Image => Ok(self.file.photo_default_duration),
             MediaKind::Video | MediaKind::Audio => {
                 let abs = self.resolve_path(relative_path);
-                probe_duration(&abs).unwrap_or_else(|_| self.default_duration_for(kind))
+                probe_duration(&abs)
             }
         }
     }

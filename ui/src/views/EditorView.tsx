@@ -166,6 +166,17 @@ export function EditorView({ onNewProject }: EditorViewProps) {
     const sourcePath = event.dataTransfer.getData("text/plain");
     if (!sourcePath || !timeline) return;
 
+    const file = media.find((m) => m.relative_path === sourcePath);
+    if (file) {
+      const compatible =
+        (track.kind === "audio" && file.media_kind === "audio") ||
+        (track.kind === "video" && file.media_kind !== "audio");
+      if (!compatible) {
+        setError(`Cannot place ${file.media_kind} media on a ${track.kind} track.`);
+        return;
+      }
+    }
+
     const rect = event.currentTarget.getBoundingClientRect();
     const x = event.clientX - rect.left;
     const start = Math.max(0, x / PIXELS_PER_SECOND);
@@ -307,6 +318,9 @@ export function EditorView({ onNewProject }: EditorViewProps) {
   }
 
   async function startExport() {
+    if (exportProgress && !exportProgress.done && !exportProgress.error) {
+      return;
+    }
     setExportProgress({ done: false, progress: 0, message: "Starting export..." });
     try {
       await api.startExport();

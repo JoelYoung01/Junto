@@ -115,8 +115,15 @@ impl Timeline {
         start: f64,
         duration: f64,
     ) -> Result<Uuid> {
-        if self.track(track_id).is_none() {
-            return Err(JuntoError::TrackNotFound(track_id.to_string()));
+        let track = self
+            .track(track_id)
+            .ok_or_else(|| JuntoError::TrackNotFound(track_id.to_string()))?;
+
+        if !media_kind_matches_track(media_kind, track.kind) {
+            return Err(JuntoError::Timeline(format!(
+                "media kind {:?} is not compatible with {:?} track",
+                media_kind, track.kind
+            )));
         }
 
         let clip = Clip {
@@ -317,6 +324,32 @@ mod tests {
             .find(|t| t.kind == TrackKind::Audio)
             .expect("audio track")
             .id
+    }
+
+    #[test]
+    fn add_clip_rejects_incompatible_track_kind() {
+        let mut timeline = Timeline::new();
+        let video = video_track(&timeline);
+        let audio = audio_track(&timeline);
+
+        assert!(timeline
+            .add_clip(
+                video,
+                "Raw Footage/song.mp3".into(),
+                MediaKind::Audio,
+                0.0,
+                2.0,
+            )
+            .is_err());
+        assert!(timeline
+            .add_clip(
+                audio,
+                "Raw Footage/clip.mp4".into(),
+                MediaKind::Video,
+                0.0,
+                2.0,
+            )
+            .is_err());
     }
 
     #[test]
