@@ -101,16 +101,20 @@ export function EditorView({ onNewProject }: EditorViewProps) {
     if (!timeline) return;
     const playhead = timeline.playhead;
     const requestId = ++previewRequest.current;
+    const width = playing ? 320 : 640;
+    const delay = playing ? 50 : 0;
     const handle = window.setTimeout(() => {
       void api
-        .getPreviewFrame(playhead, 640)
+        .getPreviewFrame(playhead, width)
         .then((frame) => {
-          if (requestId === previewRequest.current) setPreview(frame);
+          if (requestId === previewRequest.current) {
+            setPreview(frame);
+          }
         })
         .catch(() => {
-          if (requestId === previewRequest.current) setPreview(null);
+          /* keep last good frame while seeking */
         });
-    }, playing ? 80 : 0);
+    }, delay);
     return () => window.clearTimeout(handle);
   }, [timeline?.playhead, playing, timeline]);
 

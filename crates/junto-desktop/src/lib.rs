@@ -296,7 +296,7 @@ async fn get_preview_frame(
                     junto_core::MediaKind::Video | junto_core::MediaKind::Image
                 )
             })
-            .filter(|c| t >= c.start && t < c.start + c.duration)
+            .filter(|c| t + f64::EPSILON >= c.start && t <= c.start + c.duration + 0.05)
             .cloned()
             .collect();
         visual.sort_by(|a, b| {
