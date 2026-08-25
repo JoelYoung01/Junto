@@ -1,20 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  Pause,
-  Play,
-  Plus,
-  Trash2,
-} from "lucide-react";
+import { Pause, Play, Plus } from "lucide-react";
 
 import {
   api,
   Clip,
   ExportProgress,
   ExportSettings,
+  PreviewFrame,
   ScannedMediaFile,
   Timeline,
   Track,
 } from "@/api";
+import { TimelineClip } from "@/components/TimelineClip";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -46,9 +43,11 @@ export function EditorView({ onNewProject }: EditorViewProps) {
   const [exportProgress, setExportProgress] = useState<ExportProgress | null>(null);
   const [draggingClipId, setDraggingClipId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [preview, setPreview] = useState<PreviewFrame | null>(null);
   const playTimer = useRef<number | null>(null);
   const playheadRef = useRef(0);
   const durationRef = useRef(10);
+  const previewRequest = useRef(0);
 
   const refresh = useCallback(async () => {
     const [current, files, state, settings] = await Promise.all([
@@ -98,6 +97,23 @@ export function EditorView({ onNewProject }: EditorViewProps) {
     durationRef.current = duration;
   }, [duration]);
 
+  useEffect(() => {
+    if (!timeline) return;
+    const playhead = timeline.playhead;
+    const requestId = ++previewRequest.current;
+    const handle = window.setTimeout(() => {
+      void api
+        .getPreviewFrame(playhead, 640)
+        .then((frame) => {
+          if (requestId === previewRequest.current) setPreview(frame);
+        })
+        .catch(() => {
+          if (requestId === previewRequest.current) setPreview(null);
+        });
+    }, playing ? 80 : 0);
+    return () => window.clearTimeout(handle);
+  }, [timeline?.playhead, playing, timeline]);
+
   async function handleDropOnTrack(track: Track, event: React.DragEvent<HTMLDivElement>) {
     event.preventDefault();
     const sourcePath = event.dataTransfer.getData("text/plain");
@@ -144,10 +160,11 @@ export function EditorView({ onNewProject }: EditorViewProps) {
 
   async function scrub(event: React.MouseEvent<HTMLDivElement>) {
     const rect = event.currentTarget.getBoundingClientRect();
-    const x = event.clientX - rect.left;
-    const position = Math.max(0, Math.min(duration, x / PIXELS_PER_SECOND));
+    const ratio = rect.width > 0 ? (event.clientX - rect.left) / rect.width : 0;
+    const position = Math.max(0, Math.min(duration, ratio * duration));
+    playheadRef.current = position;
     await api.setPlayhead(position);
-    await refresh();
+    setTimeline((prev) => (prev ? { ...prev, playhead: position } : prev));
   }
 
   async function addMediaToTimeline(file: ScannedMediaFile) {
@@ -294,34 +311,16 @@ export function EditorView({ onNewProject }: EditorViewProps) {
                     {timeline.clips
                       .filter((clip) => clip.track_id === track.id)
                       .map((clip) => (
-                        <div
+                        <TimelineClip
                           key={clip.id}
-                          className={`absolute top-2 flex h-12 items-center rounded-md px-2 text-xs text-white ${
-                            clip.media_kind === "audio"
-                              ? "bg-amber-600"
-                              : clip.media_kind === "image"
-                                ? "bg-emerald-600"
-                                : "bg-blue-600"
-                          }`}
-                          style={{
-                            left: clip.start * PIXELS_PER_SECOND,
-                            width: clip.duration * PIXELS_PER_SECOND,
-                          }}
-                          draggable
+                          clip={clip}
                           onDragStart={() => setDraggingClipId(clip.id)}
                           onDragEnd={(e) => void onClipDragEnd(clip, e)}
-                        >
-                          <span className="truncate">{clip.source_path.split("/").pop()}</span>
-                          <button
-                            className="ml-auto rounded p-1 hover:bg-black/20"
-                            onClick={() => void api.removeTimelineClip(clip.id).then(refresh)}
-                          >
-                            <Trash2 className="h-3 w-3" />
-                          </button>
-                        </div>
+                          onRemove={() => void api.removeTimelineClip(clip.id).then(refresh)}
+                        />
                       ))}
                     <div
-                      className="pointer-events-none absolute top-0 bottom-0 w-0.5 bg-rose-500"
+                      className="pointer-events-none absolute top-0 bottom-0 z-20 w-0.5 bg-rose-500"
                       style={{ left: timeline.playhead * PIXELS_PER_SECOND }}
                     />
                   </div>
@@ -333,8 +332,24 @@ export function EditorView({ onNewProject }: EditorViewProps) {
 
         <aside className="min-h-0 overflow-auto border-l p-4">
           <h2 className="mb-3 text-sm font-medium">Preview</h2>
-          <div className="flex aspect-video items-center justify-center rounded-lg border bg-black/40 text-sm text-muted-foreground">
-            Preview at {timeline.playhead.toFixed(1)}s
+          <div className="relative flex aspect-video items-center justify-center overflow-hidden rounded-lg border bg-black">
+            {preview?.data_url ? (
+              <img
+                src={preview.data_url}
+                alt={preview.source_path.split("/").pop() ?? "preview"}
+                className="h-full w-full object-contain"
+              />
+            ) : (
+              <p className="px-3 text-center text-sm text-muted-foreground">
+                {timeline.clips.some((c) => c.media_kind !== "audio")
+                  ? `No visual clip at ${timeline.playhead.toFixed(1)}s`
+                  : "Add a video or image clip to preview"}
+              </p>
+            )}
+            <div className="pointer-events-none absolute bottom-2 left-2 rounded bg-black/60 px-2 py-0.5 text-[10px] text-white">
+              {timeline.playhead.toFixed(1)}s
+              {preview?.source_path ? ` · ${preview.source_path.split("/").pop()}` : ""}
+            </div>
           </div>
           <Separator className="my-4" />
           <p className="text-xs text-muted-foreground">

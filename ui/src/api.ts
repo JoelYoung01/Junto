@@ -71,6 +71,13 @@ export interface ExportProgress {
   error?: string;
 }
 
+export interface PreviewFrame {
+  data_url: string;
+  source_path: string;
+  media_kind: "video" | "image" | "audio";
+  playhead: number;
+}
+
 export const api = {
   getAppConfig: () => invoke<AppConfig>("get_app_config"),
   completeSetup: () => invoke<void>("complete_setup"),
@@ -95,6 +102,10 @@ export const api = {
   updateExportSettings: (settings: ExportSettings) =>
     invoke<void>("update_export_settings", { settings }),
   startExport: () => invoke<void>("start_export"),
+  getMediaFrame: (sourcePath: string, timeSeconds?: number, maxWidth?: number) =>
+    invoke<string | null>("get_media_frame", { sourcePath, timeSeconds, maxWidth }),
+  getPreviewFrame: (playhead?: number, maxWidth?: number) =>
+    invoke<PreviewFrame | null>("get_preview_frame", { playhead, maxWidth }),
   onExportProgress: (handler: (progress: ExportProgress) => void) =>
     listen<ExportProgress>("export-progress", (event) => handler(event.payload)),
 };

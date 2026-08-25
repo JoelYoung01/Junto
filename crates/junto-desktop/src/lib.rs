@@ -241,6 +241,121 @@ async fn start_export(app: AppHandle, state: State<'_, AppState>) -> Result<(), 
     Ok(())
 }
 
+#[tauri::command]
+async fn get_media_frame(
+    source_path: String,
+    time_seconds: Option<f64>,
+    max_width: Option<u32>,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    let (root, abs) = {
+        let guard = state.project.read().map_err(|e| e.to_string())?;
+        let project = guard.as_ref().ok_or_else(|| "no project open".to_string())?;
+        let abs = project.resolve_path(&source_path);
+        (project.root.clone(), abs)
+    };
+    let kind = junto_core::MediaKind::from_path(&abs);
+    if matches!(kind, Some(junto_core::MediaKind::Audio) | None) {
+        return Ok(None);
+    }
+    let time = time_seconds.unwrap_or(0.0);
+    let width = max_width.unwrap_or(320);
+    let source_path_clone = source_path.clone();
+    let jpeg = tauri::async_runtime::spawn_blocking(move || {
+        junto_core::frame_jpeg_cached(&root, &source_path_clone, &abs, time, width)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    Ok(Some(format!(
+        "data:image/jpeg;base64,{}",
+        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, jpeg)
+    )))
+}
+
+#[tauri::command]
+async fn get_preview_frame(
+    playhead: Option<f64>,
+    max_width: Option<u32>,
+    state: State<'_, AppState>,
+) -> Result<Option<serde_json::Value>, String> {
+    let snapshot = {
+        let guard = state.project.read().map_err(|e| e.to_string())?;
+        let project = guard.as_ref().ok_or_else(|| "no project open".to_string())?;
+        let t = playhead.unwrap_or(project.file.timeline.playhead);
+        let width = max_width.unwrap_or(640);
+
+        let mut visual: Vec<_> = project
+            .file
+            .timeline
+            .clips
+            .iter()
+            .filter(|c| {
+                matches!(
+                    c.media_kind,
+                    junto_core::MediaKind::Video | junto_core::MediaKind::Image
+                )
+            })
+            .filter(|c| t >= c.start && t < c.start + c.duration)
+            .cloned()
+            .collect();
+        visual.sort_by(|a, b| {
+            let track_a = project
+                .file
+                .timeline
+                .tracks
+                .iter()
+                .find(|tr| tr.id == a.track_id)
+                .map(|tr| tr.index)
+                .unwrap_or(0);
+            let track_b = project
+                .file
+                .timeline
+                .tracks
+                .iter()
+                .find(|tr| tr.id == b.track_id)
+                .map(|tr| tr.index)
+                .unwrap_or(0);
+            track_a.cmp(&track_b)
+        });
+
+        let Some(clip) = visual.into_iter().next() else {
+            return Ok(None);
+        };
+        let local = (t - clip.start + clip.source_offset).max(0.0);
+        let abs = project.resolve_path(&clip.source_path);
+        (
+            project.root.clone(),
+            clip.source_path,
+            clip.media_kind,
+            abs,
+            local,
+            width,
+            t,
+        )
+    };
+
+    let (root, source_path, media_kind, abs, local, width, t) = snapshot;
+    let jpeg = tauri::async_runtime::spawn_blocking(move || {
+        junto_core::frame_jpeg_cached(&root, &source_path, &abs, local, width)
+            .map(|jpeg| (jpeg, source_path, media_kind))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+
+    let (jpeg, source_path, media_kind) = jpeg;
+    Ok(Some(serde_json::json!({
+        "data_url": format!(
+            "data:image/jpeg;base64,{}",
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, jpeg)
+        ),
+        "source_path": source_path,
+        "media_kind": media_kind,
+        "playhead": t,
+    })))
+}
+
 fn project_summary(project: &Project) -> ProjectSummary {
     ProjectSummary {
         name: project.file.name.clone(),
@@ -322,6 +437,8 @@ pub fn run() {
             get_export_settings,
             update_export_settings,
             start_export,
+            get_media_frame,
+            get_preview_frame,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Junto");
