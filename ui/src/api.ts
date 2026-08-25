@@ -5,6 +5,7 @@ import { open as openUrl } from "@tauri-apps/plugin-shell";
 
 export interface AppConfig {
   setup_complete: boolean;
+  last_project?: string | null;
 }
 
 export interface DirectoryScan {

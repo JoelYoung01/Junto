@@ -17,7 +17,14 @@ export default function App() {
         setScreen("setup");
         return;
       }
-      const project = await api.getCurrentProject();
+      let project = await api.getCurrentProject();
+      if (!project && config.last_project) {
+        try {
+          project = await api.openProject(config.last_project);
+        } catch {
+          // Last project may have been moved or deleted — fall through to wizard.
+        }
+      }
       setScreen(project ? "editor" : "wizard");
     })();
   }, []);

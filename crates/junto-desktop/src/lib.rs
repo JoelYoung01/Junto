@@ -22,6 +22,8 @@ pub struct AppState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub setup_complete: bool,
+    #[serde(default)]
+    pub last_project: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -63,6 +65,7 @@ fn create_project(path: String, name: String, state: State<'_, AppState>) -> Res
     let root = PathBuf::from(path);
     let project = Project::create(root, name).map_err(|e| e.to_string())?;
     let summary = project_summary(&project);
+    app_config::remember_project(&project.root).map_err(|e| e.to_string())?;
     *state.project.write().map_err(|e| e.to_string())? = Some(project);
     Ok(summary)
 }
@@ -72,6 +75,7 @@ fn open_project(path: String, state: State<'_, AppState>) -> Result<ProjectSumma
     let root = PathBuf::from(path);
     let project = Project::open(root).map_err(|e| e.to_string())?;
     let summary = project_summary(&project);
+    app_config::remember_project(&project.root).map_err(|e| e.to_string())?;
     *state.project.write().map_err(|e| e.to_string())? = Some(project);
     Ok(summary)
 }
@@ -240,6 +244,38 @@ pub fn run() {
         .init();
 
     let project: SharedProject = Arc::new(RwLock::new(None));
+
+    // Prefer explicit env override, then last opened project from config.
+    if let Some(path) = std::env::var_os("JUNTO_OPEN_PROJECT") {
+        let path = PathBuf::from(path);
+        match Project::open(path.clone()).or_else(|_| {
+            Project::create(
+                path.clone(),
+                path.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("Untitled Project")
+                    .to_string(),
+            )
+        }) {
+            Ok(opened) => {
+                let _ = app_config::remember_project(&opened.root);
+                tracing::info!("Opened project from JUNTO_OPEN_PROJECT: {}", opened.root.display());
+                *project.write().expect("project lock") = Some(opened);
+            }
+            Err(err) => tracing::warn!("JUNTO_OPEN_PROJECT failed: {err}"),
+        }
+    } else if let Ok(config) = app_config::load() {
+        if let Some(path) = config.last_project {
+            match Project::open(PathBuf::from(&path)) {
+                Ok(opened) => {
+                    tracing::info!("Reopened last project: {}", opened.root.display());
+                    *project.write().expect("project lock") = Some(opened);
+                }
+                Err(err) => tracing::warn!("Failed to reopen last project {path}: {err}"),
+            }
+        }
+    }
+
     let mcp_port = 7799u16;
     let mcp_project = Arc::clone(&project);
 
