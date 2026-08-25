@@ -217,12 +217,14 @@ export function EditorView({ onNewProject }: EditorViewProps) {
               {media.map((file) => (
                 <div
                   key={file.relative_path}
-                  draggable
-                  onDragStart={(e) => e.dataTransfer.setData("text/plain", file.relative_path)}
-                  className="cursor-grab rounded-md border border-transparent px-2 py-2 text-sm hover:border-border hover:bg-muted/40"
+                  className="rounded-md border border-transparent px-2 py-2 text-sm hover:border-border hover:bg-muted/40"
                 >
                   <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
+                    <div
+                      className="min-w-0 cursor-grab"
+                      draggable
+                      onDragStart={(e) => e.dataTransfer.setData("text/plain", file.relative_path)}
+                    >
                       <p className="truncate font-medium">{file.relative_path.split("/").pop()}</p>
                       <p className="text-xs capitalize text-muted-foreground">{file.media_kind}</p>
                     </div>
@@ -230,7 +232,11 @@ export function EditorView({ onNewProject }: EditorViewProps) {
                       size="sm"
                       variant="ghost"
                       className="h-7 shrink-0 px-2"
-                      onClick={() => void addMediaToTimeline(file)}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        void addMediaToTimeline(file);
+                      }}
                     >
                       Add
                     </Button>
