@@ -52,12 +52,17 @@ Tauri dev (UI + desktop):
 
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"
+cargo watch -x 'run -p junto-desktop'   # UI hot-reloads via Vite; Rust restarts on save
+# or without cargo-watch:
 cargo run -p junto-desktop
 ```
+
+Install [cargo-watch](https://github.com/watchexec/cargo-watch) once: `cargo install cargo-watch`.
 
 ## Documentation
 
 - [Product definition](./docs/Junto%20Product.md)
+- [MCP specification reference](./docs/MCP%20Specification%20Reference.md) — Streamable HTTP compliance checklist
 - [Competitive wedge summary](./docs/competitive/Wedge%20Summary%20—%20Kerf%20vs%20Palmier%20vs%20Us.md)
 - [Kerf analysis](./docs/competitive/Kerf%20Product%20Analysis.md)
 - [Palmier Pro analysis](./docs/competitive/Palmier%20Pro%20Product.md)
