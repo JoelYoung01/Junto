@@ -32,10 +32,7 @@ export default function App() {
     return (
       <SetupView
         onComplete={() => setScreen("wizard")}
-        onOpenProject={async () => {
-          const project = await api.getCurrentProject();
-          setScreen(project ? "editor" : "wizard");
-        }}
+        onOpenProject={() => setScreen("editor")}
       />
     );
   }

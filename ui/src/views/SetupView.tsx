@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Copy, FolderPlus, Plug } from "lucide-react";
 
-import { api, copyText, mcpBundleInstructions } from "@/api";
+import { api, copyText, mcpBundleInstructions, pickDirectory } from "@/api";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -21,6 +21,9 @@ interface SetupViewProps {
 export function SetupView({ onComplete, onOpenProject }: SetupViewProps) {
   const [mcpUrl, setMcpUrl] = useState("");
   const [copied, setCopied] = useState(false);
+  const [manualPath, setManualPath] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     void api.getMcpInfo().then((info) => setMcpUrl(info.url));
@@ -35,6 +38,25 @@ export function SetupView({ onComplete, onOpenProject }: SetupViewProps) {
     await copyText(mcpBundleInstructions(mcpUrl));
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  }
+
+  async function openExistingProject(path?: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      const selected = path?.trim() || (await pickDirectory("Open existing Junto project"));
+      if (!selected) {
+        setBusy(false);
+        return;
+      }
+      await api.completeSetup();
+      await api.openProject(selected);
+      onOpenProject();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
@@ -76,13 +98,32 @@ export function SetupView({ onComplete, onOpenProject }: SetupViewProps) {
             <p className="text-sm text-muted-foreground">
               When you continue, you can create a new project folder or open an existing one.
             </p>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <input
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                placeholder="/path/to/existing/project"
+                value={manualPath}
+                onChange={(e) => setManualPath(e.target.value)}
+                disabled={busy}
+              />
+              <Button
+                variant="secondary"
+                disabled={busy || !manualPath.trim()}
+                onClick={() => void openExistingProject(manualPath)}
+              >
+                Open path
+              </Button>
+            </div>
+            {error && <p className="text-sm text-red-400">{error}</p>}
           </section>
         </CardContent>
         <CardFooter className="justify-end gap-2">
-          <Button variant="secondary" onClick={() => void onOpenProject()}>
+          <Button variant="secondary" disabled={busy} onClick={() => void openExistingProject()}>
             Open existing project
           </Button>
-          <Button onClick={() => void finishSetup()}>Continue</Button>
+          <Button disabled={busy} onClick={() => void finishSetup()}>
+            Continue
+          </Button>
         </CardFooter>
       </Card>
     </div>

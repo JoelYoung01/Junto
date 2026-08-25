@@ -49,6 +49,8 @@ export function EditorView({ onNewProject }: EditorViewProps) {
   const [draggingClipId, setDraggingClipId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const playTimer = useRef<number | null>(null);
+  const playheadRef = useRef(0);
+  const durationRef = useRef(10);
 
   const refresh = useCallback(async () => {
     const [current, files, state, settings] = await Promise.all([
@@ -61,6 +63,7 @@ export function EditorView({ onNewProject }: EditorViewProps) {
     setMedia(files);
     setTimeline(state);
     setExportSettings(settings);
+    if (state) playheadRef.current = state.playhead;
   }, []);
 
   useEffect(() => {
@@ -72,19 +75,30 @@ export function EditorView({ onNewProject }: EditorViewProps) {
   }, [refresh]);
 
   useEffect(() => {
-    if (!playing || !timeline) return;
+    if (!playing) return;
     playTimer.current = window.setInterval(() => {
-      void api.setPlayhead(timeline.playhead + 0.1).then(() => void refresh());
+      const next = Math.min(durationRef.current, playheadRef.current + 0.1);
+      playheadRef.current = next;
+      void api.setPlayhead(next).then(() => {
+        setTimeline((prev) => (prev ? { ...prev, playhead: next } : prev));
+      });
+      if (next >= durationRef.current) {
+        setPlaying(false);
+      }
     }, 100);
     return () => {
       if (playTimer.current) window.clearInterval(playTimer.current);
     };
-  }, [playing, timeline, refresh]);
+  }, [playing]);
 
   const duration = useMemo(() => {
     if (!timeline) return 10;
     return Math.max(10, ...timeline.clips.map((clip) => clip.start + clip.duration));
   }, [timeline]);
+
+  useEffect(() => {
+    durationRef.current = duration;
+  }, [duration]);
 
   async function handleDropOnTrack(track: Track, event: React.DragEvent<HTMLDivElement>) {
     event.preventDefault();

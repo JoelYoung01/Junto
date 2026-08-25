@@ -171,8 +171,8 @@ fn remove_timeline_clip(clip_id: String, state: State<'_, AppState>) -> Result<(
 fn set_playhead(position: f64, state: State<'_, AppState>) -> Result<(), String> {
     let mut guard = state.project.write().map_err(|e| e.to_string())?;
     let project = guard.as_mut().ok_or_else(|| "no project open".to_string())?;
+    // Playhead is ephemeral UI state — avoid writing project.json on every tick.
     project.file.timeline.playhead = position.max(0.0);
-    project.save().map_err(|e| e.to_string())?;
     Ok(())
 }
 

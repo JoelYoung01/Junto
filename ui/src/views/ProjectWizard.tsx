@@ -30,6 +30,8 @@ export function ProjectWizard({ onComplete, onCancel }: ProjectWizardProps) {
   const [step, setStep] = useState<WizardStep>("pick");
   const [projectPath, setProjectPath] = useState<string | null>(null);
   const [projectName, setProjectName] = useState("");
+  const [manualPath, setManualPath] = useState("");
+  const [manualImportPath, setManualImportPath] = useState("");
   const [scan, setScan] = useState<DirectoryScan | null>(null);
   const [summary, setSummary] = useState<ProjectSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -41,15 +43,37 @@ export function ProjectWizard({ onComplete, onCancel }: ProjectWizardProps) {
     [scan],
   );
 
-  async function chooseProjectFolder() {
+  async function useProjectFolder(selected: string) {
     setError(null);
-    const selected = await pickDirectory("Choose project folder");
-    if (!selected) return;
     setProjectPath(selected);
     setProjectName(selected.split(/[/\\]/).pop() ?? "Untitled Project");
     const result = await api.scanDirectory(selected);
     setScan(result);
     setStep("review");
+  }
+
+  async function chooseProjectFolder() {
+    setError(null);
+    try {
+      const selected = await pickDirectory("Choose project folder");
+      if (!selected) return;
+      await useProjectFolder(selected);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function useManualProjectPath() {
+    const selected = manualPath.trim();
+    if (!selected) return;
+    setBusy(true);
+    try {
+      await useProjectFolder(selected);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function createProject(andImport: boolean) {
@@ -83,6 +107,19 @@ export function ProjectWizard({ onComplete, onCancel }: ProjectWizardProps) {
     }
   }
 
+  async function importFromPath(source: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.importFootage(source);
+      setStep("done");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function importFootage() {
     setBusy(true);
     setError(null);
@@ -92,11 +129,9 @@ export function ProjectWizard({ onComplete, onCancel }: ProjectWizardProps) {
         setBusy(false);
         return;
       }
-      await api.importFootage(source);
-      setStep("done");
+      await importFromPath(source);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
-    } finally {
       setBusy(false);
     }
   }
@@ -113,10 +148,32 @@ export function ProjectWizard({ onComplete, onCancel }: ProjectWizardProps) {
         </CardHeader>
         <CardContent className="space-y-4">
           {step === "pick" && (
-            <Button onClick={() => void chooseProjectFolder()}>
-              <FolderOpen className="h-4 w-4" />
-              Select project folder
-            </Button>
+            <div className="space-y-4">
+              <Button onClick={() => void chooseProjectFolder()}>
+                <FolderOpen className="h-4 w-4" />
+                Select project folder
+              </Button>
+              <div className="space-y-2">
+                <Label htmlFor="manual-project-path">Or paste a folder path</Label>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <input
+                    id="manual-project-path"
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    placeholder="/path/to/project"
+                    value={manualPath}
+                    onChange={(e) => setManualPath(e.target.value)}
+                    disabled={busy}
+                  />
+                  <Button
+                    variant="secondary"
+                    disabled={busy || !manualPath.trim()}
+                    onClick={() => void useManualProjectPath()}
+                  >
+                    Use path
+                  </Button>
+                </div>
+              </div>
+            </div>
           )}
 
           {step === "review" && scan && (
@@ -171,6 +228,26 @@ export function ProjectWizard({ onComplete, onCancel }: ProjectWizardProps) {
                 <Import className="h-4 w-4" />
                 Choose raw footage folder
               </Button>
+              <div className="space-y-2">
+                <Label htmlFor="manual-import-path">Or paste a footage folder path</Label>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <input
+                    id="manual-import-path"
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    placeholder="/path/to/footage"
+                    value={manualImportPath}
+                    onChange={(e) => setManualImportPath(e.target.value)}
+                    disabled={busy}
+                  />
+                  <Button
+                    variant="secondary"
+                    disabled={busy || !manualImportPath.trim()}
+                    onClick={() => void importFromPath(manualImportPath.trim())}
+                  >
+                    Import path
+                  </Button>
+                </div>
+              </div>
               <Button variant="ghost" disabled={busy} onClick={() => setStep("done")}>
                 Skip for now
               </Button>
