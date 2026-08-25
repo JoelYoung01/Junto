@@ -141,6 +141,16 @@ impl Timeline {
     }
 
     pub fn move_clip(&mut self, clip_id: Uuid, new_start: f64) -> Result<()> {
+        self.move_clip_to_track(clip_id, new_start, None)
+    }
+
+    /// Move a clip to a new start time, optionally onto another track.
+    pub fn move_clip_to_track(
+        &mut self,
+        clip_id: Uuid,
+        new_start: f64,
+        new_track_id: Option<Uuid>,
+    ) -> Result<()> {
         let clip = self
             .clips
             .iter()
@@ -152,8 +162,21 @@ impl Timeline {
             return Err(JuntoError::Timeline("start time cannot be negative".into()));
         }
 
+        let dest_track_id = new_track_id.unwrap_or(clip.track_id);
+        let dest_track = self
+            .track(dest_track_id)
+            .ok_or_else(|| JuntoError::TrackNotFound(dest_track_id.to_string()))?;
+
+        if !media_kind_matches_track(clip.media_kind, dest_track.kind) {
+            return Err(JuntoError::Timeline(format!(
+                "media kind {:?} is not compatible with {:?} track",
+                clip.media_kind, dest_track.kind
+            )));
+        }
+
         let candidate = Clip {
             start: new_start,
+            track_id: dest_track_id,
             ..clip
         };
 
@@ -169,6 +192,80 @@ impl Timeline {
             .find(|c| c.id == clip_id)
             .expect("clip exists");
         clip_mut.start = new_start;
+        clip_mut.track_id = dest_track_id;
+        Ok(())
+    }
+
+    /// Trim a clip by updating its source offset and visible duration.
+    pub fn trim_clip(&mut self, clip_id: Uuid, source_offset: f64, duration: f64) -> Result<()> {
+        if source_offset < 0.0 {
+            return Err(JuntoError::Timeline(
+                "source_offset cannot be negative".into(),
+            ));
+        }
+        if duration <= 0.0 {
+            return Err(JuntoError::Timeline("duration must be greater than 0".into()));
+        }
+
+        let clip = self
+            .clips
+            .iter()
+            .find(|c| c.id == clip_id)
+            .ok_or_else(|| JuntoError::ClipNotFound(clip_id.to_string()))?
+            .clone();
+
+        let candidate = Clip {
+            source_offset,
+            duration,
+            ..clip
+        };
+
+        if overlaps_on_track(self, &candidate, Some(clip_id)) {
+            return Err(JuntoError::Timeline(
+                "trim would overlap another clip on this track".into(),
+            ));
+        }
+
+        let clip_mut = self
+            .clips
+            .iter_mut()
+            .find(|c| c.id == clip_id)
+            .expect("clip exists");
+        clip_mut.source_offset = source_offset;
+        clip_mut.duration = duration;
+        Ok(())
+    }
+
+    /// Change a clip's visible duration while keeping its source offset.
+    pub fn set_clip_duration(&mut self, clip_id: Uuid, duration: f64) -> Result<()> {
+        if duration <= 0.0 {
+            return Err(JuntoError::Timeline("duration must be greater than 0".into()));
+        }
+
+        let clip = self
+            .clips
+            .iter()
+            .find(|c| c.id == clip_id)
+            .ok_or_else(|| JuntoError::ClipNotFound(clip_id.to_string()))?
+            .clone();
+
+        let candidate = Clip {
+            duration,
+            ..clip
+        };
+
+        if overlaps_on_track(self, &candidate, Some(clip_id)) {
+            return Err(JuntoError::Timeline(
+                "duration change would overlap another clip on this track".into(),
+            ));
+        }
+
+        let clip_mut = self
+            .clips
+            .iter_mut()
+            .find(|c| c.id == clip_id)
+            .expect("clip exists");
+        clip_mut.duration = duration;
         Ok(())
     }
 
@@ -179,6 +276,14 @@ impl Timeline {
             return Err(JuntoError::ClipNotFound(clip_id.to_string()));
         }
         Ok(())
+    }
+}
+
+fn media_kind_matches_track(media_kind: MediaKind, track_kind: TrackKind) -> bool {
+    match (media_kind, track_kind) {
+        (MediaKind::Video | MediaKind::Image, TrackKind::Video) => true,
+        (MediaKind::Audio, TrackKind::Audio) => true,
+        _ => false,
     }
 }
 
