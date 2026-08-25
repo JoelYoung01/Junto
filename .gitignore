@@ -6,9 +6,12 @@
 /target/
 **/*.rs.bk
 
-# Frontend (when added)
+# Frontend
 node_modules/
+ui/node_modules/
 dist/
+ui/dist/
+.pnpm-store/
 .svelte-kit/
 
 # OS / IDE
