@@ -19,3 +19,7 @@ ui/dist/
 Thumbs.db
 .idea/
 .vscode/
+
+# Accidental thumbnail cache exports (should live under .junto/thumbs/)
+__Users__*.jpg
+headers.txt
