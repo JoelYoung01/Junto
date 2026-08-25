@@ -215,11 +215,22 @@ async fn start_export(app: AppHandle, state: State<'_, AppState>) -> Result<(), 
     let rx = {
         let guard = state.project.read().map_err(|e| e.to_string())?;
         let project = guard.as_ref().ok_or_else(|| "no project open".to_string())?;
+        tracing::info!(
+            "starting export for project {} ({} clips)",
+            project.root.display(),
+            project.file.timeline.clips.len()
+        );
         project.export_async()
     };
 
     tauri::async_runtime::spawn_blocking(move || {
         while let Ok(progress) = rx.recv() {
+            tracing::info!(
+                "export progress: {}% {} {:?}",
+                (progress.progress * 100.0) as i32,
+                progress.message,
+                progress.output_path
+            );
             let _ = app.emit("export-progress", &progress);
             if progress.done {
                 break;

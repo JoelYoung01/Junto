@@ -202,10 +202,13 @@ export function EditorView({ onNewProject }: EditorViewProps) {
           <Button variant="outline" onClick={onNewProject}>
             New project
           </Button>
-          <Button onClick={() => {
-            setExportProgress(null);
-            setExportOpen(true);
-          }}>
+          <Button
+            onClick={() => {
+              setExportProgress(null);
+              setExportOpen(true);
+              void startExport();
+            }}
+          >
             Export
           </Button>
         </div>
@@ -341,8 +344,21 @@ export function EditorView({ onNewProject }: EditorViewProps) {
         </aside>
       </div>
 
-      <Dialog open={exportOpen} onOpenChange={setExportOpen}>
-        <DialogContent>
+      <Dialog
+        open={exportOpen}
+        onOpenChange={(open) => {
+          setExportOpen(open);
+          if (open) setExportProgress(null);
+        }}
+      >
+        <DialogContent
+          onPointerDownOutside={(e) => {
+            if (exportProgress && !exportProgress.done) e.preventDefault();
+          }}
+          onInteractOutside={(e) => {
+            if (exportProgress && !exportProgress.done) e.preventDefault();
+          }}
+        >
           <DialogHeader>
             <DialogTitle>Export video</DialogTitle>
             <DialogDescription>
@@ -423,9 +439,29 @@ export function EditorView({ onNewProject }: EditorViewProps) {
 
           <DialogFooter>
             <Button
-              onClick={async () => {
-                if (exportSettings) await api.updateExportSettings(exportSettings);
-                await startExport();
+              type="button"
+              onPointerDown={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+              }}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                void (async () => {
+                  try {
+                    if (exportSettings) {
+                      await api.updateExportSettings(exportSettings);
+                    }
+                    await startExport();
+                  } catch (err) {
+                    setExportProgress({
+                      done: true,
+                      progress: 0,
+                      message: "Export failed",
+                      error: err instanceof Error ? err.message : String(err),
+                    });
+                  }
+                })();
               }}
               disabled={exportProgress !== null && !exportProgress.done && !exportProgress.error}
             >
