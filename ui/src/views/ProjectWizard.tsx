@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { FolderOpen, Import } from "lucide-react";
 
 import {
@@ -30,12 +30,12 @@ export function ProjectWizard({ onComplete, onCancel }: ProjectWizardProps) {
   const [step, setStep] = useState<WizardStep>("pick");
   const [projectPath, setProjectPath] = useState<string | null>(null);
   const [projectName, setProjectName] = useState("");
-  const [manualPath, setManualPath] = useState("");
-  const [manualImportPath, setManualImportPath] = useState("");
   const [scan, setScan] = useState<DirectoryScan | null>(null);
   const [summary, setSummary] = useState<ProjectSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const projectPathRef = useRef<HTMLInputElement>(null);
+  const importPathRef = useRef<HTMLInputElement>(null);
 
   const mediaOutsideRaw = useMemo(
     () =>
@@ -54,19 +54,26 @@ export function ProjectWizard({ onComplete, onCancel }: ProjectWizardProps) {
 
   async function chooseProjectFolder() {
     setError(null);
+    setBusy(true);
     try {
       const selected = await pickDirectory("Choose project folder");
       if (!selected) return;
       await useProjectFolder(selected);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
     }
   }
 
   async function useManualProjectPath() {
-    const selected = manualPath.trim();
-    if (!selected) return;
+    const selected = projectPathRef.current?.value.trim() ?? "";
+    if (!selected) {
+      setError("Enter a folder path first.");
+      return;
+    }
     setBusy(true);
+    setError(null);
     try {
       await useProjectFolder(selected);
     } catch (err) {
@@ -136,6 +143,15 @@ export function ProjectWizard({ onComplete, onCancel }: ProjectWizardProps) {
     }
   }
 
+  async function importManualPath() {
+    const source = importPathRef.current?.value.trim() ?? "";
+    if (!source) {
+      setError("Enter a footage folder path first.");
+      return;
+    }
+    await importFromPath(source);
+  }
+
   return (
     <div className="grid min-h-screen place-items-center p-6">
       <Card className="w-full max-w-2xl">
@@ -149,7 +165,7 @@ export function ProjectWizard({ onComplete, onCancel }: ProjectWizardProps) {
         <CardContent className="space-y-4">
           {step === "pick" && (
             <div className="space-y-4">
-              <Button onClick={() => void chooseProjectFolder()}>
+              <Button disabled={busy} onClick={() => void chooseProjectFolder()}>
                 <FolderOpen className="h-4 w-4" />
                 Select project folder
               </Button>
@@ -158,15 +174,15 @@ export function ProjectWizard({ onComplete, onCancel }: ProjectWizardProps) {
                 <div className="flex flex-col gap-2 sm:flex-row">
                   <input
                     id="manual-project-path"
+                    ref={projectPathRef}
                     className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                     placeholder="/path/to/project"
-                    value={manualPath}
-                    onChange={(e) => setManualPath(e.target.value)}
+                    defaultValue=""
                     disabled={busy}
                   />
                   <Button
                     variant="secondary"
-                    disabled={busy || !manualPath.trim()}
+                    disabled={busy}
                     onClick={() => void useManualProjectPath()}
                   >
                     Use path
@@ -233,16 +249,16 @@ export function ProjectWizard({ onComplete, onCancel }: ProjectWizardProps) {
                 <div className="flex flex-col gap-2 sm:flex-row">
                   <input
                     id="manual-import-path"
+                    ref={importPathRef}
                     className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                     placeholder="/path/to/footage"
-                    value={manualImportPath}
-                    onChange={(e) => setManualImportPath(e.target.value)}
+                    defaultValue=""
                     disabled={busy}
                   />
                   <Button
                     variant="secondary"
-                    disabled={busy || !manualImportPath.trim()}
-                    onClick={() => void importFromPath(manualImportPath.trim())}
+                    disabled={busy}
+                    onClick={() => void importManualPath()}
                   >
                     Import path
                   </Button>

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Copy, FolderPlus, Plug } from "lucide-react";
 
 import { api, copyText, mcpBundleInstructions, pickDirectory } from "@/api";
@@ -21,30 +21,44 @@ interface SetupViewProps {
 export function SetupView({ onComplete, onOpenProject }: SetupViewProps) {
   const [mcpUrl, setMcpUrl] = useState("");
   const [copied, setCopied] = useState(false);
-  const [manualPath, setManualPath] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const pathRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     void api.getMcpInfo().then((info) => setMcpUrl(info.url));
   }, []);
 
   async function finishSetup() {
-    await api.completeSetup();
-    onComplete();
-  }
-
-  async function copyMcpConfig() {
-    await copyText(mcpBundleInstructions(mcpUrl));
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  }
-
-  async function openExistingProject(path?: string) {
     setBusy(true);
     setError(null);
     try {
-      const selected = path?.trim() || (await pickDirectory("Open existing Junto project"));
+      await api.completeSetup();
+      onComplete();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function copyMcpConfig() {
+    try {
+      await copyText(mcpBundleInstructions(mcpUrl));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function openExistingProject(fromDialog: boolean) {
+    setBusy(true);
+    setError(null);
+    try {
+      const selected = fromDialog
+        ? await pickDirectory("Open existing Junto project")
+        : pathRef.current?.value.trim() || null;
       if (!selected) {
         setBusy(false);
         return;
@@ -100,16 +114,16 @@ export function SetupView({ onComplete, onOpenProject }: SetupViewProps) {
             </p>
             <div className="flex flex-col gap-2 sm:flex-row">
               <input
+                ref={pathRef}
                 className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                 placeholder="/path/to/existing/project"
-                value={manualPath}
-                onChange={(e) => setManualPath(e.target.value)}
+                defaultValue=""
                 disabled={busy}
               />
               <Button
                 variant="secondary"
-                disabled={busy || !manualPath.trim()}
-                onClick={() => void openExistingProject(manualPath)}
+                disabled={busy}
+                onClick={() => void openExistingProject(false)}
               >
                 Open path
               </Button>
@@ -118,7 +132,11 @@ export function SetupView({ onComplete, onOpenProject }: SetupViewProps) {
           </section>
         </CardContent>
         <CardFooter className="justify-end gap-2">
-          <Button variant="secondary" disabled={busy} onClick={() => void openExistingProject()}>
+          <Button
+            variant="secondary"
+            disabled={busy}
+            onClick={() => void openExistingProject(true)}
+          >
             Open existing project
           </Button>
           <Button disabled={busy} onClick={() => void finishSetup()}>

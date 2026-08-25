@@ -152,6 +152,29 @@ export function EditorView({ onNewProject }: EditorViewProps) {
     await refresh();
   }
 
+  async function addMediaToTimeline(file: ScannedMediaFile) {
+    if (!timeline) return;
+    const preferredKind = file.media_kind === "audio" ? "audio" : "video";
+    const track =
+      timeline.tracks.find((t) => t.kind === preferredKind) ?? timeline.tracks[0];
+    if (!track) {
+      setError("No timeline track available.");
+      return;
+    }
+    const clipsOnTrack = timeline.clips.filter((clip) => clip.track_id === track.id);
+    const start = clipsOnTrack.reduce(
+      (max, clip) => Math.max(max, clip.start + clip.duration),
+      0,
+    );
+    try {
+      await api.addClipToTimeline(track.id, file.relative_path, start);
+      await refresh();
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   async function startExport() {
     setExportProgress({ done: false, progress: 0, message: "Starting export..." });
     await api.startExport();
@@ -198,8 +221,20 @@ export function EditorView({ onNewProject }: EditorViewProps) {
                   onDragStart={(e) => e.dataTransfer.setData("text/plain", file.relative_path)}
                   className="cursor-grab rounded-md border border-transparent px-2 py-2 text-sm hover:border-border hover:bg-muted/40"
                 >
-                  <p className="truncate font-medium">{file.relative_path.split("/").pop()}</p>
-                  <p className="text-xs capitalize text-muted-foreground">{file.media_kind}</p>
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="truncate font-medium">{file.relative_path.split("/").pop()}</p>
+                      <p className="text-xs capitalize text-muted-foreground">{file.media_kind}</p>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 shrink-0 px-2"
+                      onClick={() => void addMediaToTimeline(file)}
+                    >
+                      Add
+                    </Button>
+                  </div>
                 </div>
               ))}
               {media.length === 0 && (
