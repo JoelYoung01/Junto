@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { FolderOpen, Import } from "lucide-react";
 
 import {
@@ -29,13 +29,13 @@ type WizardStep = "pick" | "review" | "import" | "done";
 export function ProjectWizard({ onComplete, onCancel }: ProjectWizardProps) {
   const [step, setStep] = useState<WizardStep>("pick");
   const [projectPath, setProjectPath] = useState<string | null>(null);
+  const [projectPathInput, setProjectPathInput] = useState("");
+  const [importPathInput, setImportPathInput] = useState("");
   const [projectName, setProjectName] = useState("");
   const [scan, setScan] = useState<DirectoryScan | null>(null);
   const [summary, setSummary] = useState<ProjectSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const projectPathRef = useRef<HTMLInputElement>(null);
-  const importPathRef = useRef<HTMLInputElement>(null);
 
   const mediaOutsideRaw = useMemo(
     () =>
@@ -46,13 +46,14 @@ export function ProjectWizard({ onComplete, onCancel }: ProjectWizardProps) {
   async function useProjectFolder(selected: string) {
     setError(null);
     setProjectPath(selected);
+    setProjectPathInput(selected);
     setProjectName(selected.split(/[/\\]/).pop() ?? "Untitled Project");
     const result = await api.scanDirectory(selected);
     setScan(result);
     setStep("review");
   }
 
-  async function chooseProjectFolder() {
+  async function browseProjectFolder() {
     setError(null);
     setBusy(true);
     try {
@@ -66,10 +67,10 @@ export function ProjectWizard({ onComplete, onCancel }: ProjectWizardProps) {
     }
   }
 
-  async function useManualProjectPath() {
-    const selected = projectPathRef.current?.value.trim() ?? "";
+  async function continueWithProjectPath() {
+    const selected = projectPathInput.trim();
     if (!selected) {
-      setError("Enter a folder path first.");
+      setError("Choose a project folder first.");
       return;
     }
     setBusy(true);
@@ -127,15 +128,13 @@ export function ProjectWizard({ onComplete, onCancel }: ProjectWizardProps) {
     }
   }
 
-  async function importFootage() {
-    setBusy(true);
+  async function browseFootageFolder() {
     setError(null);
+    setBusy(true);
     try {
       const source = await pickFootageSource("Choose raw footage folder");
-      if (!source) {
-        setBusy(false);
-        return;
-      }
+      if (!source) return;
+      setImportPathInput(source);
       await importFromPath(source);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -144,9 +143,9 @@ export function ProjectWizard({ onComplete, onCancel }: ProjectWizardProps) {
   }
 
   async function importManualPath() {
-    const source = importPathRef.current?.value.trim() ?? "";
+    const source = importPathInput.trim();
     if (!source) {
-      setError("Enter a footage folder path first.");
+      setError("Choose a footage folder first.");
       return;
     }
     await importFromPath(source);
@@ -165,30 +164,31 @@ export function ProjectWizard({ onComplete, onCancel }: ProjectWizardProps) {
         <CardContent className="space-y-4">
           {step === "pick" && (
             <div className="space-y-4">
-              <Button disabled={busy} onClick={() => void chooseProjectFolder()}>
-                <FolderOpen className="h-4 w-4" />
-                Select project folder
-              </Button>
               <div className="space-y-2">
-                <Label htmlFor="manual-project-path">Or paste a folder path</Label>
+                <Label htmlFor="project-folder">Project folder</Label>
                 <div className="flex flex-col gap-2 sm:flex-row">
                   <input
-                    id="manual-project-path"
-                    ref={projectPathRef}
+                    id="project-folder"
                     className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                    placeholder="/path/to/project"
-                    defaultValue=""
+                    placeholder="Browse for a folder or paste a path"
+                    value={projectPathInput}
+                    onChange={(e) => setProjectPathInput(e.target.value)}
                     disabled={busy}
                   />
                   <Button
+                    type="button"
                     variant="secondary"
                     disabled={busy}
-                    onClick={() => void useManualProjectPath()}
+                    onClick={() => void browseProjectFolder()}
                   >
-                    Use path
+                    <FolderOpen className="h-4 w-4" />
+                    Browse
                   </Button>
                 </div>
               </div>
+              <Button disabled={busy || !projectPathInput.trim()} onClick={() => void continueWithProjectPath()}>
+                Continue
+              </Button>
             </div>
           )}
 
@@ -222,7 +222,15 @@ export function ProjectWizard({ onComplete, onCancel }: ProjectWizardProps) {
                   <Button disabled={busy} onClick={() => void createProject(true)}>
                     Yes, use this folder and move media into Raw Footage
                   </Button>
-                  <Button variant="outline" disabled={busy} onClick={() => setStep("pick")}>
+                  <Button
+                    variant="outline"
+                    disabled={busy}
+                    onClick={() => {
+                      setStep("pick");
+                      setScan(null);
+                      setProjectPath(null);
+                    }}
+                  >
                     Choose a different folder
                   </Button>
                 </div>
@@ -240,33 +248,36 @@ export function ProjectWizard({ onComplete, onCancel }: ProjectWizardProps) {
                 Your project folder is ready. Choose where your raw footage lives and Junto will copy
                 it into <code className="rounded bg-muted px-1 py-0.5">Raw Footage/</code>.
               </p>
-              <Button disabled={busy} onClick={() => void importFootage()}>
-                <Import className="h-4 w-4" />
-                Choose raw footage folder
-              </Button>
               <div className="space-y-2">
-                <Label htmlFor="manual-import-path">Or paste a footage folder path</Label>
+                <Label htmlFor="footage-folder">Raw footage folder</Label>
                 <div className="flex flex-col gap-2 sm:flex-row">
                   <input
-                    id="manual-import-path"
-                    ref={importPathRef}
+                    id="footage-folder"
                     className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                    placeholder="/path/to/footage"
-                    defaultValue=""
+                    placeholder="Browse for a folder or paste a path"
+                    value={importPathInput}
+                    onChange={(e) => setImportPathInput(e.target.value)}
                     disabled={busy}
                   />
                   <Button
+                    type="button"
                     variant="secondary"
                     disabled={busy}
-                    onClick={() => void importManualPath()}
+                    onClick={() => void browseFootageFolder()}
                   >
-                    Import path
+                    <Import className="h-4 w-4" />
+                    Browse
                   </Button>
                 </div>
               </div>
-              <Button variant="ghost" disabled={busy} onClick={() => setStep("done")}>
-                Skip for now
-              </Button>
+              <div className="flex flex-wrap gap-2">
+                <Button disabled={busy || !importPathInput.trim()} onClick={() => void importManualPath()}>
+                  Import footage
+                </Button>
+                <Button variant="ghost" disabled={busy} onClick={() => setStep("done")}>
+                  Skip for now
+                </Button>
+              </div>
             </div>
           )}
 

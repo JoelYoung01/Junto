@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { Copy, FolderPlus, Plug } from "lucide-react";
+import { Copy, FolderOpen, FolderPlus, Plug } from "lucide-react";
 
-import { api, copyText, invokeErrorMessage, mcpBundleInstructions, pickDirectory } from "@/api";
+import { api, copyText, invokeErrorMessage, mcpConfigSnippet, pickDirectory } from "@/api";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -12,6 +12,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
+import { Label } from "@/components/ui/label";
 
 interface SetupViewProps {
   onComplete: () => void;
@@ -22,10 +23,9 @@ type HealthStatus = "checking" | "connected" | "unreachable";
 
 export function SetupView({ onComplete, onOpenProject }: SetupViewProps) {
   const [mcpUrl, setMcpUrl] = useState("");
-  const [healthUrl, setHealthUrl] = useState("");
   const [healthStatus, setHealthStatus] = useState<HealthStatus>("checking");
   const [lastChecked, setLastChecked] = useState<Date | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<"cursor" | "opencode" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const pathRef = useRef<HTMLInputElement>(null);
@@ -34,11 +34,11 @@ export function SetupView({ onComplete, onOpenProject }: SetupViewProps) {
     let cancelled = false;
     let timer: number | null = null;
 
-    async function pollHealth(url: string) {
+    async function pollHealth() {
       try {
-        const response = await fetch(url, { method: "GET", cache: "no-store" });
+        const connected = await api.checkMcpHealth();
         if (!cancelled) {
-          setHealthStatus(response.ok ? "connected" : "unreachable");
+          setHealthStatus(connected ? "connected" : "unreachable");
           setLastChecked(new Date());
         }
       } catch {
@@ -54,10 +54,9 @@ export function SetupView({ onComplete, onOpenProject }: SetupViewProps) {
       .then((info) => {
         if (cancelled) return;
         setMcpUrl(info.url);
-        setHealthUrl(info.health_url);
-        void pollHealth(info.health_url);
+        void pollHealth();
         timer = window.setInterval(() => {
-          void pollHealth(info.health_url);
+          void pollHealth();
         }, 5000);
       })
       .catch((err) => {
@@ -86,11 +85,11 @@ export function SetupView({ onComplete, onOpenProject }: SetupViewProps) {
     }
   }
 
-  async function copyMcpConfig() {
+  async function copyMcpConfig(client: "cursor" | "opencode") {
     try {
-      await copyText(mcpBundleInstructions(mcpUrl));
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      await copyText(mcpConfigSnippet(mcpUrl, client));
+      setCopied(client);
+      setTimeout(() => setCopied(null), 2000);
     } catch (err) {
       setError(invokeErrorMessage(err));
     }
@@ -106,6 +105,9 @@ export function SetupView({ onComplete, onOpenProject }: SetupViewProps) {
       if (!selected) {
         setBusy(false);
         return;
+      }
+      if (!fromDialog && pathRef.current) {
+        pathRef.current.value = selected;
       }
       await api.completeSetup();
       await api.openProject(selected);
@@ -148,23 +150,45 @@ export function SetupView({ onComplete, onOpenProject }: SetupViewProps) {
               Connect your agent (optional)
             </div>
             <p className="text-sm text-muted-foreground">
-              Copy this MCP configuration into Cursor, Claude Code, or another MCP-capable agent.
+              Junto exposes a standard MCP Streamable HTTP server. Paste the config for your agent
+              below, restart the agent session, then open a project in Junto before using tools.
             </p>
             <p className={`text-sm ${healthClass}`}>
               MCP status: {healthLabel}
-              {lastChecked
-                ? ` · last checked ${lastChecked.toLocaleTimeString()}`
-                : healthUrl
-                  ? ""
-                  : " · waiting for health URL"}
+              {lastChecked ? ` · last checked ${lastChecked.toLocaleTimeString()}` : ""}
             </p>
-            <pre className="overflow-auto rounded-lg border bg-muted/30 p-3 text-xs">
-              {mcpBundleInstructions(mcpUrl)}
-            </pre>
-            <Button variant="outline" onClick={() => void copyMcpConfig()}>
-              <Copy className="h-4 w-4" />
-              {copied ? "Copied" : "Copy MCP config"}
-            </Button>
+
+            <div className="space-y-2">
+              <p className="text-xs font-medium text-muted-foreground">Cursor · Claude Code</p>
+              <p className="text-xs text-muted-foreground">
+                Add to <code className="text-foreground">.cursor/mcp.json</code> or your Claude MCP
+                settings.
+              </p>
+              <pre className="overflow-auto rounded-lg border bg-muted/30 p-3 text-xs">
+                {mcpConfigSnippet(mcpUrl, "cursor")}
+              </pre>
+              <Button variant="outline" size="sm" onClick={() => void copyMcpConfig("cursor")}>
+                <Copy className="h-4 w-4" />
+                {copied === "cursor" ? "Copied" : "Copy Cursor config"}
+              </Button>
+            </div>
+
+            <div className="space-y-2">
+              <p className="text-xs font-medium text-muted-foreground">OpenCode</p>
+              <p className="text-xs text-muted-foreground">
+                Add to <code className="text-foreground">opencode.json</code> or{" "}
+                <code className="text-foreground">opencode.jsonc</code>. Uses{" "}
+                <code className="text-foreground">codemode: false</code> so tools are exposed
+                directly. MCP requests log to the Junto dev console.
+              </p>
+              <pre className="overflow-auto rounded-lg border bg-muted/30 p-3 text-xs">
+                {mcpConfigSnippet(mcpUrl, "opencode")}
+              </pre>
+              <Button variant="outline" size="sm" onClick={() => void copyMcpConfig("opencode")}>
+                <Copy className="h-4 w-4" />
+                {copied === "opencode" ? "Copied" : "Copy OpenCode config"}
+              </Button>
+            </div>
           </section>
 
           <Separator />
@@ -177,16 +201,30 @@ export function SetupView({ onComplete, onOpenProject }: SetupViewProps) {
             <p className="text-sm text-muted-foreground">
               When you continue, you can create a new project folder or open an existing one.
             </p>
-            <div className="flex flex-col gap-2 sm:flex-row">
-              <input
-                ref={pathRef}
-                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                placeholder="/path/to/existing/project"
-                defaultValue=""
-                disabled={busy}
-              />
+            <div className="space-y-2">
+              <Label htmlFor="existing-project-path">Open an existing project</Label>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <input
+                  id="existing-project-path"
+                  ref={pathRef}
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  placeholder="Browse for a folder or paste a path"
+                  defaultValue=""
+                  disabled={busy}
+                />
+                <Button
+                  type="button"
+                  variant="secondary"
+                  disabled={busy}
+                  onClick={() => void openExistingProject(true)}
+                >
+                  <FolderOpen className="h-4 w-4" />
+                  Browse
+                </Button>
+              </div>
               <Button
-                variant="secondary"
+                variant="outline"
+                size="sm"
                 disabled={busy}
                 onClick={() => void openExistingProject(false)}
               >
@@ -197,15 +235,8 @@ export function SetupView({ onComplete, onOpenProject }: SetupViewProps) {
           </section>
         </CardContent>
         <CardFooter className="justify-end gap-2">
-          <Button
-            variant="secondary"
-            disabled={busy}
-            onClick={() => void openExistingProject(true)}
-          >
-            Open existing project
-          </Button>
           <Button disabled={busy} onClick={() => void finishSetup()}>
-            Continue
+            Create new project
           </Button>
         </CardFooter>
       </Card>
