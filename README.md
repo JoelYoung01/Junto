@@ -40,7 +40,7 @@ MVP in progress. Rust core + Tauri desktop shell + React UI (shadcn/Tailwind).
 
 ## Development
 
-Requires [pnpm](https://pnpm.io), Rust (1.85+), and ffmpeg.
+Requires [pnpm](https://pnpm.io), Rust 1.98 (pinned via `rust-toolchain.toml`), and ffmpeg.
 
 ```bash
 pnpm install          # install UI deps (workspace root)

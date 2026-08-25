@@ -3,6 +3,7 @@ name = "junto-core"
 description = "Core engine for Junto: project model, timeline, filesystem, export"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 
