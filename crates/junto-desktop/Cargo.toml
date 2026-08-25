@@ -18,6 +18,7 @@ chrono.workspace = true
 dirs.workspace = true
 junto-core = { path = "../junto-core" }
 junto-mcp = { path = "../junto-mcp" }
+notify = "8"
 serde.workspace = true
 serde_json.workspace = true
 tauri = { version = "2", features = [] }
@@ -27,6 +28,7 @@ tauri-plugin-shell = "2"
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+ureq = "2"
 uuid.workspace = true
 
 [features]

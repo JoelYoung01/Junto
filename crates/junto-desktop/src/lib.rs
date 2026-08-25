@@ -1,17 +1,20 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use junto_core::{
-    DirectoryScan, ExportSettings, Project, ScannedMediaFile, Timeline, TrackKind,
+    DirectoryScan, ExportSettings, Project, ProjectEntry, ScannedMediaFile, Timeline, TrackKind,
 };
 use junto_mcp::{start_server, SharedProject};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
 mod app_config;
+mod raw_footage_watcher;
+
+use raw_footage_watcher::RawFootageWatcher;
 
 pub use app_config::{load as load_app_config, save as save_app_config};
 
@@ -19,6 +22,22 @@ pub struct AppState {
     pub project: SharedProject,
     pub mcp_port: u16,
     pub export_running: Arc<AtomicBool>,
+    footage_watcher: Mutex<Option<RawFootageWatcher>>,
+}
+
+fn sync_raw_footage_watcher(app: &AppHandle, state: &AppState) {
+    let mut watcher_guard = state.footage_watcher.lock().expect("footage watcher lock");
+    *watcher_guard = None;
+
+    let project_root = state
+        .project
+        .read()
+        .ok()
+        .and_then(|guard| guard.as_ref().map(|project| project.root.clone()));
+
+    if let Some(root) = project_root {
+        *watcher_guard = Some(RawFootageWatcher::start(app.clone(), root));
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,9 +70,17 @@ fn complete_setup() -> Result<(), String> {
 fn get_mcp_info(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({
         "url": format!("http://127.0.0.1:{}/mcp", state.mcp_port),
-        "tools_url": format!("http://127.0.0.1:{}/tools", state.mcp_port),
         "health_url": format!("http://127.0.0.1:{}/health", state.mcp_port),
     }))
+}
+
+#[tauri::command]
+fn check_mcp_health(state: State<'_, AppState>) -> bool {
+    let url = format!("http://127.0.0.1:{}/health", state.mcp_port);
+    match ureq::get(&url).call() {
+        Ok(response) => response.status() == 200,
+        Err(_) => false,
+    }
 }
 
 #[tauri::command]
@@ -63,22 +90,29 @@ fn scan_directory(path: String) -> Result<DirectoryScan, String> {
 }
 
 #[tauri::command]
-fn create_project(path: String, name: String, state: State<'_, AppState>) -> Result<ProjectSummary, String> {
+fn create_project(
+    path: String,
+    name: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<ProjectSummary, String> {
     let root = PathBuf::from(path);
     let project = Project::create(root, name).map_err(|e| e.to_string())?;
     let summary = project_summary(&project);
     app_config::remember_project(&project.root).map_err(|e| e.to_string())?;
     *state.project.write().map_err(|e| e.to_string())? = Some(project);
+    sync_raw_footage_watcher(&app, &state);
     Ok(summary)
 }
 
 #[tauri::command]
-fn open_project(path: String, state: State<'_, AppState>) -> Result<ProjectSummary, String> {
+fn open_project(path: String, app: AppHandle, state: State<'_, AppState>) -> Result<ProjectSummary, String> {
     let root = PathBuf::from(path);
     let project = Project::open(root).map_err(|e| e.to_string())?;
     let summary = project_summary(&project);
     app_config::remember_project(&project.root).map_err(|e| e.to_string())?;
     *state.project.write().map_err(|e| e.to_string())? = Some(project);
+    sync_raw_footage_watcher(&app, &state);
     Ok(summary)
 }
 
@@ -113,6 +147,13 @@ fn list_media(state: State<'_, AppState>) -> Result<Vec<ScannedMediaFile>, Strin
     let guard = state.project.read().map_err(|e| e.to_string())?;
     let project = guard.as_ref().ok_or_else(|| "no project open".to_string())?;
     project.list_media().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_project_entries(state: State<'_, AppState>) -> Result<Vec<ProjectEntry>, String> {
+    let guard = state.project.read().map_err(|e| e.to_string())?;
+    let project = guard.as_ref().ok_or_else(|| "no project open".to_string())?;
+    project.list_project_entries().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -326,7 +367,7 @@ async fn start_export(app: AppHandle, state: State<'_, AppState>) -> Result<(), 
 async fn get_media_frame(
     source_path: String,
     time_seconds: Option<f64>,
-    max_width: Option<u32>,
+    max_height: Option<u32>,
     state: State<'_, AppState>,
 ) -> Result<Option<String>, String> {
     let (root, abs) = {
@@ -340,10 +381,10 @@ async fn get_media_frame(
         return Ok(None);
     }
     let time = time_seconds.unwrap_or(0.0);
-    let width = max_width.unwrap_or(320);
+    let height = max_height.unwrap_or(320);
     let source_path_clone = source_path.clone();
     let jpeg = tauri::async_runtime::spawn_blocking(move || {
-        junto_core::frame_jpeg_cached(&root, &source_path_clone, &abs, time, width)
+        junto_core::frame_jpeg_cached(&root, &source_path_clone, &abs, time, height)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -357,14 +398,14 @@ async fn get_media_frame(
 #[tauri::command]
 async fn get_preview_frame(
     playhead: Option<f64>,
-    max_width: Option<u32>,
+    max_height: Option<u32>,
     state: State<'_, AppState>,
 ) -> Result<Option<serde_json::Value>, String> {
     let snapshot = {
         let guard = state.project.read().map_err(|e| e.to_string())?;
         let project = guard.as_ref().ok_or_else(|| "no project open".to_string())?;
         let t = playhead.unwrap_or(project.file.timeline.playhead);
-        let width = max_width.unwrap_or(640);
+        let height = max_height.unwrap_or(360);
 
         let mut visual: Vec<_> = project
             .file
@@ -411,14 +452,14 @@ async fn get_preview_frame(
             clip.media_kind,
             abs,
             local,
-            width,
+            height,
             t,
         )
     };
 
-    let (root, source_path, media_kind, abs, local, width, t) = snapshot;
+    let (root, source_path, media_kind, abs, local, height, t) = snapshot;
     let jpeg = tauri::async_runtime::spawn_blocking(move || {
-        junto_core::frame_jpeg_cached(&root, &source_path, &abs, local, width)
+        junto_core::frame_jpeg_cached(&root, &source_path, &abs, local, height)
             .map(|jpeg| (jpeg, source_path, media_kind))
     })
     .await
@@ -445,9 +486,15 @@ fn project_summary(project: &Project) -> ProjectSummary {
     }
 }
 
+use tracing_subscriber::EnvFilter;
+
 pub fn run() {
     tracing_subscriber::fmt()
-        .with_env_filter("info")
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                EnvFilter::new("info,junto_mcp=debug,rmcp=debug,junto_desktop=debug")
+            }),
+        )
         .init();
 
     let project: SharedProject = Arc::new(RwLock::new(None));
@@ -503,11 +550,18 @@ pub fn run() {
             project,
             mcp_port,
             export_running,
+            footage_watcher: Mutex::new(None),
+        })
+        .setup(|app| {
+            let state = app.state::<AppState>();
+            sync_raw_footage_watcher(app.handle(), &state);
+            Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             get_app_config,
             complete_setup,
             get_mcp_info,
+            check_mcp_health,
             scan_directory,
             create_project,
             open_project,
@@ -515,6 +569,7 @@ pub fn run() {
             import_footage,
             consolidate_footage,
             list_media,
+            list_project_entries,
             get_timeline,
             add_clip_to_timeline,
             move_timeline_clip,
