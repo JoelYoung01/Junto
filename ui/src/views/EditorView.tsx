@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Download,
-  FolderPlus,
   Pause,
   Play,
   Plus,
@@ -185,26 +183,22 @@ export function EditorView({ onNewProject }: EditorViewProps) {
   }
 
   return (
-    <div className="grid min-h-screen grid-rows-[auto_1fr_auto]">
-      <header className="flex items-center justify-between border-b px-4 py-3">
-        <div>
-          <h1 className="text-lg font-semibold">{project.name}</h1>
-          <p className="text-xs text-muted-foreground">{project.root}</p>
+    <div className="flex h-screen flex-col overflow-hidden bg-background">
+      <header className="flex shrink-0 items-center justify-between gap-4 border-b px-4 py-3">
+        <div className="min-w-0 flex-1">
+          <h1 className="truncate text-lg font-semibold">{project.name}</h1>
+          <p className="truncate text-xs text-muted-foreground">{project.root}</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-2">
           <Button variant="outline" onClick={onNewProject}>
-            <FolderPlus className="h-4 w-4" />
             New project
           </Button>
-          <Button onClick={() => setExportOpen(true)}>
-            <Download className="h-4 w-4" />
-            Export
-          </Button>
+          <Button onClick={() => setExportOpen(true)}>Export</Button>
         </div>
       </header>
 
-      <div className="grid min-h-0 grid-cols-[260px_1fr_320px]">
-        <aside className="border-r p-4">
+      <div className="grid min-h-0 flex-1 grid-cols-[260px_minmax(0,1fr)_300px] overflow-hidden">
+        <aside className="min-h-0 overflow-hidden border-r p-4">
           <div className="mb-3 flex items-center justify-between">
             <h2 className="text-sm font-medium">Filesystem</h2>
             <Button size="sm" variant="outline" onClick={() => void api.addTrack("video").then(refresh)}>
@@ -212,7 +206,7 @@ export function EditorView({ onNewProject }: EditorViewProps) {
               Track
             </Button>
           </div>
-          <ScrollArea className="h-[calc(100vh-220px)] pr-3">
+          <ScrollArea className="h-[calc(100%-2.5rem)] pr-3">
             <div className="space-y-2">
               {media.map((file) => (
                 <div
@@ -250,7 +244,7 @@ export function EditorView({ onNewProject }: EditorViewProps) {
           </ScrollArea>
         </aside>
 
-        <main className="flex min-h-0 flex-col p-4">
+        <main className="flex min-h-0 min-w-0 flex-col overflow-hidden p-4">
           <div className="mb-4 flex items-center gap-2">
             <Button size="icon" variant="outline" onClick={() => void togglePlay()}>
               {playing ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
@@ -270,7 +264,7 @@ export function EditorView({ onNewProject }: EditorViewProps) {
             />
           </div>
 
-          <ScrollArea className="flex-1">
+          <ScrollArea className="min-h-0 flex-1">
             <div style={{ width: duration * PIXELS_PER_SECOND + 120 }}>
               {timeline.tracks.map((track) => (
                 <div key={track.id} className="mb-3 grid grid-cols-[110px_1fr] items-center gap-3">
@@ -320,7 +314,7 @@ export function EditorView({ onNewProject }: EditorViewProps) {
           </ScrollArea>
         </main>
 
-        <aside className="border-l p-4">
+        <aside className="min-h-0 overflow-auto border-l p-4">
           <h2 className="mb-3 text-sm font-medium">Preview</h2>
           <div className="flex aspect-video items-center justify-center rounded-lg border bg-black/40 text-sm text-muted-foreground">
             Preview at {timeline.playhead.toFixed(1)}s
