@@ -133,7 +133,10 @@ fn add_clip_to_timeline(
     let project = guard.as_mut().ok_or_else(|| "no project open".to_string())?;
     let media_kind = junto_core::MediaKind::from_path(std::path::Path::new(&source_path))
         .ok_or_else(|| "unsupported media file".to_string())?;
-    let duration = duration.unwrap_or_else(|| project.default_duration_for(media_kind));
+    let duration = match duration {
+        Some(d) => d,
+        None => resolve_clip_duration(project, &source_path, media_kind),
+    };
     let clip_id = project
         .file
         .timeline
@@ -144,17 +147,81 @@ fn add_clip_to_timeline(
 }
 
 #[tauri::command]
-fn move_timeline_clip(clip_id: String, start: f64, state: State<'_, AppState>) -> Result<(), String> {
+fn move_timeline_clip(
+    clip_id: String,
+    start: f64,
+    track_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let clip_id = Uuid::parse_str(&clip_id).map_err(|e| e.to_string())?;
+    let new_track_id = match track_id {
+        Some(id) => Some(Uuid::parse_str(&id).map_err(|e| e.to_string())?),
+        None => None,
+    };
+    let mut guard = state.project.write().map_err(|e| e.to_string())?;
+    let project = guard.as_mut().ok_or_else(|| "no project open".to_string())?;
+    project
+        .file
+        .timeline
+        .move_clip_to_track(clip_id, start, new_track_id)
+        .map_err(|e| e.to_string())?;
+    project.save().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn trim_timeline_clip(
+    clip_id: String,
+    source_offset: f64,
+    duration: f64,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
     let clip_id = Uuid::parse_str(&clip_id).map_err(|e| e.to_string())?;
     let mut guard = state.project.write().map_err(|e| e.to_string())?;
     let project = guard.as_mut().ok_or_else(|| "no project open".to_string())?;
     project
         .file
         .timeline
-        .move_clip(clip_id, start)
+        .trim_clip(clip_id, source_offset, duration)
         .map_err(|e| e.to_string())?;
     project.save().map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[tauri::command]
+fn set_timeline_clip_duration(
+    clip_id: String,
+    duration: f64,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let clip_id = Uuid::parse_str(&clip_id).map_err(|e| e.to_string())?;
+    let mut guard = state.project.write().map_err(|e| e.to_string())?;
+    let project = guard.as_mut().ok_or_else(|| "no project open".to_string())?;
+    project
+        .file
+        .timeline
+        .set_clip_duration(clip_id, duration)
+        .map_err(|e| e.to_string())?;
+    project.save().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn set_photo_default_duration(duration: f64, state: State<'_, AppState>) -> Result<(), String> {
+    let mut guard = state.project.write().map_err(|e| e.to_string())?;
+    let project = guard.as_mut().ok_or_else(|| "no project open".to_string())?;
+    project
+        .set_photo_default_duration(duration)
+        .map_err(|e| e.to_string())?;
+    project.save().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn get_photo_default_duration(state: State<'_, AppState>) -> Result<f64, String> {
+    let guard = state.project.read().map_err(|e| e.to_string())?;
+    let project = guard.as_ref().ok_or_else(|| "no project open".to_string())?;
+    Ok(project.file.photo_default_duration)
 }
 
 #[tauri::command]
@@ -364,6 +431,49 @@ fn project_summary(project: &Project) -> ProjectSummary {
     }
 }
 
+/// Resolve clip duration when the caller omits it.
+/// Prefer core `probe_duration` when available; otherwise probe via ffprobe
+/// for video/audio and fall back to project defaults (photo default / 5s).
+fn resolve_clip_duration(
+    project: &Project,
+    source_path: &str,
+    media_kind: junto_core::MediaKind,
+) -> f64 {
+    match media_kind {
+        junto_core::MediaKind::Image => project.default_duration_for(media_kind),
+        junto_core::MediaKind::Video | junto_core::MediaKind::Audio => {
+            let abs = project.resolve_path(source_path);
+            probe_duration_ffprobe(&abs).unwrap_or_else(|| project.default_duration_for(media_kind))
+        }
+    }
+}
+
+/// Temporary desktop-local duration probe until Core exports `probe_duration`.
+fn probe_duration_ffprobe(path: &std::path::Path) -> Option<f64> {
+    let output = std::process::Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+        ])
+        .arg(path)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let duration: f64 = text.trim().parse().ok()?;
+    if duration.is_finite() && duration > 0.0 {
+        Some(duration)
+    } else {
+        None
+    }
+}
+
 pub fn run() {
     tracing_subscriber::fmt()
         .with_env_filter("info")
@@ -431,6 +541,10 @@ pub fn run() {
             get_timeline,
             add_clip_to_timeline,
             move_timeline_clip,
+            trim_timeline_clip,
+            set_timeline_clip_duration,
+            set_photo_default_duration,
+            get_photo_default_duration,
             remove_timeline_clip,
             set_playhead,
             add_track,

@@ -1,11 +1,12 @@
 use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::{Arc, RwLock};
 
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::Json;
-use junto_core::{DirectoryScan, Project, ScannedMediaFile};
+use junto_core::{DirectoryScan, ExportSettings, Project, ScannedMediaFile, TrackKind};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::net::TcpListener;
@@ -65,7 +66,12 @@ async fn list_tools() -> Json<Value> {
             { "name": "list_media", "description": "List media files in Raw Footage" },
             { "name": "scan_directory", "description": "Scan project directory layout" },
             { "name": "add_clip", "description": "Add a clip to the timeline" },
-            { "name": "move_clip", "description": "Move a clip on the timeline" },
+            { "name": "move_clip", "description": "Move a clip on the timeline; optional track_id for cross-track move" },
+            { "name": "trim_clip", "description": "Trim a clip source_offset and duration" },
+            { "name": "set_clip_duration", "description": "Set a clip visible duration without changing source_offset" },
+            { "name": "set_photo_default_duration", "description": "Set default duration for newly added photos" },
+            { "name": "add_track", "description": "Add a video or audio track" },
+            { "name": "update_export_settings", "description": "Update project export settings" },
             { "name": "remove_clip", "description": "Remove a clip from the timeline" },
             { "name": "set_playhead", "description": "Set playhead position in seconds" },
             { "name": "export_video", "description": "Export timeline to MP4 in outputs/" }
@@ -124,10 +130,10 @@ fn execute_tool(project: SharedProject, req: ToolCallRequest) -> Result<ToolCall
             let media_kind = junto_core::MediaKind::from_path(std::path::Path::new(&source_path))
                 .ok_or_else(|| "unsupported media file".to_string())?;
             let start: f64 = args.get("start").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            let duration = args
-                .get("duration")
-                .and_then(|v| v.as_f64())
-                .unwrap_or_else(|| project.default_duration_for(media_kind));
+            let duration = match args.get("duration").and_then(|v| v.as_f64()) {
+                Some(d) => d,
+                None => resolve_clip_duration(project, &source_path, media_kind),
+            };
             let id = project
                 .file
                 .timeline
@@ -139,13 +145,70 @@ fn execute_tool(project: SharedProject, req: ToolCallRequest) -> Result<ToolCall
         "move_clip" => {
             let clip_id: uuid::Uuid = parse_arg(&args, "clip_id")?;
             let start: f64 = parse_arg(&args, "start")?;
+            let new_track_id = match args.get("track_id") {
+                Some(v) if !v.is_null() => {
+                    let id: uuid::Uuid = serde_json::from_value(v.clone()).map_err(|e| e.to_string())?;
+                    Some(id)
+                }
+                _ => None,
+            };
             project
                 .file
                 .timeline
-                .move_clip(clip_id, start)
+                .move_clip_to_track(clip_id, start, new_track_id)
                 .map_err(|e| e.to_string())?;
             project.save().map_err(|e| e.to_string())?;
             json!({ "ok": true }).to_string()
+        }
+        "trim_clip" => {
+            let clip_id: uuid::Uuid = parse_arg(&args, "clip_id")?;
+            let source_offset: f64 = parse_arg(&args, "source_offset")?;
+            let duration: f64 = parse_arg(&args, "duration")?;
+            project
+                .file
+                .timeline
+                .trim_clip(clip_id, source_offset, duration)
+                .map_err(|e| e.to_string())?;
+            project.save().map_err(|e| e.to_string())?;
+            json!({ "ok": true }).to_string()
+        }
+        "set_clip_duration" => {
+            let clip_id: uuid::Uuid = parse_arg(&args, "clip_id")?;
+            let duration: f64 = parse_arg(&args, "duration")?;
+            project
+                .file
+                .timeline
+                .set_clip_duration(clip_id, duration)
+                .map_err(|e| e.to_string())?;
+            project.save().map_err(|e| e.to_string())?;
+            json!({ "ok": true }).to_string()
+        }
+        "set_photo_default_duration" => {
+            let duration: f64 = parse_arg(&args, "duration")?;
+            project
+                .set_photo_default_duration(duration)
+                .map_err(|e| e.to_string())?;
+            project.save().map_err(|e| e.to_string())?;
+            json!({ "photo_default_duration": project.file.photo_default_duration }).to_string()
+        }
+        "add_track" => {
+            let kind_str: String = parse_arg(&args, "kind")?;
+            let kind = match kind_str.as_str() {
+                "video" => TrackKind::Video,
+                "audio" => TrackKind::Audio,
+                other => return Err(format!("unknown track kind: {other}")),
+            };
+            let id = project.file.timeline.add_track(kind);
+            project.save().map_err(|e| e.to_string())?;
+            json!({ "track_id": id, "kind": kind_str }).to_string()
+        }
+        "update_export_settings" => {
+            let settings: ExportSettings = serde_json::from_value(args.clone())
+                .or_else(|_| parse_arg(&args, "settings"))
+                .map_err(|e| e.to_string())?;
+            project.file.export_settings = settings;
+            project.save().map_err(|e| e.to_string())?;
+            json!({ "ok": true, "export_settings": project.file.export_settings }).to_string()
         }
         "remove_clip" => {
             let clip_id: uuid::Uuid = parse_arg(&args, "clip_id")?;
@@ -184,4 +247,44 @@ fn parse_arg<T: for<'de> Deserialize<'de>>(args: &Value, key: &str) -> Result<T,
         .cloned()
         .ok_or_else(|| format!("missing argument: {key}"))
         .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
+}
+
+fn resolve_clip_duration(
+    project: &Project,
+    source_path: &str,
+    media_kind: junto_core::MediaKind,
+) -> f64 {
+    match media_kind {
+        junto_core::MediaKind::Image => project.default_duration_for(media_kind),
+        junto_core::MediaKind::Video | junto_core::MediaKind::Audio => {
+            let abs = project.resolve_path(source_path);
+            probe_duration_ffprobe(&abs).unwrap_or_else(|| project.default_duration_for(media_kind))
+        }
+    }
+}
+
+/// Temporary MCP-local duration probe until Core exports `probe_duration`.
+fn probe_duration_ffprobe(path: &Path) -> Option<f64> {
+    let output = std::process::Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+        ])
+        .arg(path)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let duration: f64 = text.trim().parse().ok()?;
+    if duration.is_finite() && duration > 0.0 {
+        Some(duration)
+    } else {
+        None
+    }
 }

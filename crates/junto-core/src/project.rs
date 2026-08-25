@@ -147,6 +147,18 @@ impl Project {
         }
     }
 
+    /// Set the default on-timeline duration used for newly added photos.
+    /// Caller is responsible for persisting via [`Project::save`].
+    pub fn set_photo_default_duration(&mut self, duration: f64) -> Result<()> {
+        if duration <= 0.0 {
+            return Err(JuntoError::InvalidProject(
+                "photo_default_duration must be greater than 0".into(),
+            ));
+        }
+        self.file.photo_default_duration = duration;
+        Ok(())
+    }
+
     pub fn touch(&mut self) {
         self.file.updated_at = Utc::now().to_rfc3339();
     }

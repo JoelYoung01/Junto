@@ -196,10 +196,28 @@ fn overlaps_on_track(timeline: &Timeline, clip: &Clip, ignore_id: Option<Uuid>) 
 mod tests {
     use super::*;
 
+    fn video_track(timeline: &Timeline) -> Uuid {
+        timeline
+            .tracks
+            .iter()
+            .find(|t| t.kind == TrackKind::Video)
+            .expect("video track")
+            .id
+    }
+
+    fn audio_track(timeline: &Timeline) -> Uuid {
+        timeline
+            .tracks
+            .iter()
+            .find(|t| t.kind == TrackKind::Audio)
+            .expect("audio track")
+            .id
+    }
+
     #[test]
     fn rejects_overlapping_clips() {
         let mut timeline = Timeline::new();
-        let track = timeline.tracks[0].id;
+        let track = video_track(&timeline);
         timeline
             .add_clip(
                 track,
@@ -218,5 +236,166 @@ mod tests {
                 2.0,
             )
             .is_err());
+    }
+
+    #[test]
+    fn trim_clip_updates_offset_and_duration() {
+        let mut timeline = Timeline::new();
+        let track = video_track(&timeline);
+        let id = timeline
+            .add_clip(
+                track,
+                "Raw Footage/a.mp4".into(),
+                MediaKind::Video,
+                0.0,
+                5.0,
+            )
+            .unwrap();
+        timeline.trim_clip(id, 1.5, 2.0).unwrap();
+        let clip = timeline.clips.iter().find(|c| c.id == id).unwrap();
+        assert!((clip.source_offset - 1.5).abs() < f64::EPSILON);
+        assert!((clip.duration - 2.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn trim_clip_rejects_invalid_values_and_overlap() {
+        let mut timeline = Timeline::new();
+        let track = video_track(&timeline);
+        let a = timeline
+            .add_clip(
+                track,
+                "Raw Footage/a.mp4".into(),
+                MediaKind::Video,
+                0.0,
+                2.0,
+            )
+            .unwrap();
+        timeline
+            .add_clip(
+                track,
+                "Raw Footage/b.mp4".into(),
+                MediaKind::Video,
+                3.0,
+                2.0,
+            )
+            .unwrap();
+
+        assert!(timeline.trim_clip(a, -1.0, 1.0).is_err());
+        assert!(timeline.trim_clip(a, 0.0, 0.0).is_err());
+        // Extending into the next clip should fail.
+        assert!(timeline.trim_clip(a, 0.0, 3.5).is_err());
+    }
+
+    #[test]
+    fn set_clip_duration_keeps_source_offset() {
+        let mut timeline = Timeline::new();
+        let track = video_track(&timeline);
+        let id = timeline
+            .add_clip(
+                track,
+                "Raw Footage/a.mp4".into(),
+                MediaKind::Video,
+                0.0,
+                5.0,
+            )
+            .unwrap();
+        timeline.trim_clip(id, 1.0, 3.0).unwrap();
+        timeline.set_clip_duration(id, 2.0).unwrap();
+        let clip = timeline.clips.iter().find(|c| c.id == id).unwrap();
+        assert!((clip.source_offset - 1.0).abs() < f64::EPSILON);
+        assert!((clip.duration - 2.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn set_clip_duration_rejects_overlap() {
+        let mut timeline = Timeline::new();
+        let track = video_track(&timeline);
+        let a = timeline
+            .add_clip(
+                track,
+                "Raw Footage/a.mp4".into(),
+                MediaKind::Video,
+                0.0,
+                2.0,
+            )
+            .unwrap();
+        timeline
+            .add_clip(
+                track,
+                "Raw Footage/b.mp4".into(),
+                MediaKind::Video,
+                3.0,
+                1.0,
+            )
+            .unwrap();
+        assert!(timeline.set_clip_duration(a, 3.5).is_err());
+    }
+
+    #[test]
+    fn move_clip_to_track_relocates_compatible_clip() {
+        let mut timeline = Timeline::new();
+        let v1 = video_track(&timeline);
+        let v2 = timeline.add_track(TrackKind::Video);
+        let id = timeline
+            .add_clip(
+                v1,
+                "Raw Footage/a.mp4".into(),
+                MediaKind::Video,
+                0.0,
+                2.0,
+            )
+            .unwrap();
+        timeline.move_clip_to_track(id, 1.0, Some(v2)).unwrap();
+        let clip = timeline.clips.iter().find(|c| c.id == id).unwrap();
+        assert_eq!(clip.track_id, v2);
+        assert!((clip.start - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn move_clip_to_track_rejects_kind_mismatch_and_overlap() {
+        let mut timeline = Timeline::new();
+        let video = video_track(&timeline);
+        let audio = audio_track(&timeline);
+        let id = timeline
+            .add_clip(
+                video,
+                "Raw Footage/a.mp4".into(),
+                MediaKind::Video,
+                0.0,
+                2.0,
+            )
+            .unwrap();
+        assert!(timeline.move_clip_to_track(id, 0.0, Some(audio)).is_err());
+
+        let v2 = timeline.add_track(TrackKind::Video);
+        timeline
+            .add_clip(
+                v2,
+                "Raw Footage/b.mp4".into(),
+                MediaKind::Video,
+                0.0,
+                3.0,
+            )
+            .unwrap();
+        assert!(timeline.move_clip_to_track(id, 1.0, Some(v2)).is_err());
+    }
+
+    #[test]
+    fn move_clip_without_track_keeps_track() {
+        let mut timeline = Timeline::new();
+        let track = video_track(&timeline);
+        let id = timeline
+            .add_clip(
+                track,
+                "Raw Footage/a.mp4".into(),
+                MediaKind::Video,
+                0.0,
+                2.0,
+            )
+            .unwrap();
+        timeline.move_clip(id, 4.0).unwrap();
+        let clip = timeline.clips.iter().find(|c| c.id == id).unwrap();
+        assert_eq!(clip.track_id, track);
+        assert!((clip.start - 4.0).abs() < f64::EPSILON);
     }
 }
