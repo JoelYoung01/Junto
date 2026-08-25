@@ -6,6 +6,7 @@ import {
   Clip,
   ExportProgress,
   ExportSettings,
+  invokeErrorMessage,
   PreviewFrame,
   ScannedMediaFile,
   Timeline,
@@ -32,6 +33,12 @@ interface EditorViewProps {
   onNewProject: () => void;
 }
 
+function trackLaneAtPoint(clientX: number, clientY: number): HTMLElement | null {
+  const el = document.elementFromPoint(clientX, clientY);
+  if (!el) return null;
+  return (el as HTMLElement).closest("[data-track-id]") as HTMLElement | null;
+}
+
 export function EditorView({ onNewProject }: EditorViewProps) {
   const [project, setProject] = useState<{ name: string; root: string } | null>(null);
   const [media, setMedia] = useState<ScannedMediaFile[]>([]);
@@ -42,8 +49,12 @@ export function EditorView({ onNewProject }: EditorViewProps) {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [exportProgress, setExportProgress] = useState<ExportProgress | null>(null);
   const [draggingClipId, setDraggingClipId] = useState<string | null>(null);
+  const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [preview, setPreview] = useState<PreviewFrame | null>(null);
+  const [trimIn, setTrimIn] = useState("");
+  const [trimDuration, setTrimDuration] = useState("");
+  const [photoDefaultDuration, setPhotoDefaultDuration] = useState("3");
   const playTimer = useRef<number | null>(null);
   const playheadRef = useRef(0);
   const durationRef = useRef(10);
@@ -63,13 +74,23 @@ export function EditorView({ onNewProject }: EditorViewProps) {
     if (state) playheadRef.current = state.playhead;
   }, []);
 
+  const loadPhotoDefault = useCallback(async () => {
+    try {
+      const value = await api.getPhotoDefaultDuration();
+      setPhotoDefaultDuration(String(value));
+    } catch {
+      /* optional command — keep local default */
+    }
+  }, []);
+
   useEffect(() => {
     void refresh();
+    void loadPhotoDefault();
     const unlistenPromise = api.onExportProgress((progress) => setExportProgress(progress));
     return () => {
       void unlistenPromise.then((unlisten) => unlisten());
     };
-  }, [refresh]);
+  }, [refresh, loadPhotoDefault]);
 
   useEffect(() => {
     if (!playing) return;
@@ -97,6 +118,28 @@ export function EditorView({ onNewProject }: EditorViewProps) {
     durationRef.current = duration;
   }, [duration]);
 
+  const selectedClip = useMemo(
+    () => timeline?.clips.find((clip) => clip.id === selectedClipId) ?? null,
+    [timeline, selectedClipId],
+  );
+
+  useEffect(() => {
+    if (!selectedClip) {
+      setTrimIn("");
+      setTrimDuration("");
+      return;
+    }
+    setTrimIn(String(selectedClip.source_offset));
+    setTrimDuration(String(selectedClip.duration));
+  }, [selectedClip?.id, selectedClip?.source_offset, selectedClip?.duration]);
+
+  useEffect(() => {
+    if (!timeline) return;
+    if (selectedClipId && !timeline.clips.some((c) => c.id === selectedClipId)) {
+      setSelectedClipId(null);
+    }
+  }, [timeline, selectedClipId]);
+
   useEffect(() => {
     if (!timeline) return;
     const playhead = timeline.playhead;
@@ -123,6 +166,17 @@ export function EditorView({ onNewProject }: EditorViewProps) {
     const sourcePath = event.dataTransfer.getData("text/plain");
     if (!sourcePath || !timeline) return;
 
+    const file = media.find((m) => m.relative_path === sourcePath);
+    if (file) {
+      const compatible =
+        (track.kind === "audio" && file.media_kind === "audio") ||
+        (track.kind === "video" && file.media_kind !== "audio");
+      if (!compatible) {
+        setError(`Cannot place ${file.media_kind} media on a ${track.kind} track.`);
+        return;
+      }
+    }
+
     const rect = event.currentTarget.getBoundingClientRect();
     const x = event.clientX - rect.left;
     const start = Math.max(0, x / PIXELS_PER_SECOND);
@@ -132,22 +186,33 @@ export function EditorView({ onNewProject }: EditorViewProps) {
       await refresh();
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(invokeErrorMessage(err));
     }
   }
 
   async function onClipDragEnd(clip: Clip, event: React.MouseEvent<HTMLDivElement>) {
     if (!draggingClipId) return;
-    const lane = (event.currentTarget.parentElement as HTMLDivElement) ?? event.currentTarget;
+    const lane =
+      trackLaneAtPoint(event.clientX, event.clientY) ??
+      ((event.currentTarget.parentElement as HTMLElement | null)?.closest(
+        "[data-track-id]",
+      ) as HTMLElement | null);
+    if (!lane) {
+      setDraggingClipId(null);
+      return;
+    }
+    const trackId = lane.dataset.trackId;
     const rect = lane.getBoundingClientRect();
     const x = event.clientX - rect.left;
     const start = Math.max(0, x / PIXELS_PER_SECOND);
+    const movedTrack = trackId && trackId !== clip.track_id ? trackId : undefined;
     try {
-      await api.moveTimelineClip(clip.id, start);
+      await api.moveTimelineClip(clip.id, start, movedTrack);
       await refresh();
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(invokeErrorMessage(err));
+      await refresh();
     } finally {
       setDraggingClipId(null);
     }
@@ -190,11 +255,72 @@ export function EditorView({ onNewProject }: EditorViewProps) {
       await refresh();
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(invokeErrorMessage(err));
+    }
+  }
+
+  async function addTrack(kind: "video" | "audio") {
+    try {
+      await api.addTrack(kind);
+      await refresh();
+      setError(null);
+    } catch (err) {
+      setError(invokeErrorMessage(err));
+    }
+  }
+
+  async function applyTrim() {
+    if (!selectedClip) return;
+    const sourceOffset = Number(trimIn);
+    const nextDuration = Number(trimDuration);
+    if (!Number.isFinite(sourceOffset) || sourceOffset < 0) {
+      setError("In (source offset) must be a non-negative number.");
+      return;
+    }
+    if (!Number.isFinite(nextDuration) || nextDuration <= 0) {
+      setError("Duration must be greater than zero.");
+      return;
+    }
+    if (
+      sourceOffset === selectedClip.source_offset &&
+      nextDuration === selectedClip.duration
+    ) {
+      return;
+    }
+    try {
+      try {
+        await api.trimTimelineClip(selectedClip.id, sourceOffset, nextDuration);
+      } catch (trimErr) {
+        if (sourceOffset !== selectedClip.source_offset) {
+          throw trimErr;
+        }
+        await api.setTimelineClipDuration(selectedClip.id, nextDuration);
+      }
+      await refresh();
+      setError(null);
+    } catch (err) {
+      setError(invokeErrorMessage(err));
+    }
+  }
+
+  async function applyPhotoDefaultDuration() {
+    const value = Number(photoDefaultDuration);
+    if (!Number.isFinite(value) || value <= 0) {
+      setError("Photo default duration must be greater than zero.");
+      return;
+    }
+    try {
+      await api.setPhotoDefaultDuration(value);
+      setError(null);
+    } catch (err) {
+      setError(invokeErrorMessage(err));
     }
   }
 
   async function startExport() {
+    if (exportProgress && !exportProgress.done && !exportProgress.error) {
+      return;
+    }
     setExportProgress({ done: false, progress: 0, message: "Starting export..." });
     try {
       await api.startExport();
@@ -203,13 +329,17 @@ export function EditorView({ onNewProject }: EditorViewProps) {
         done: true,
         progress: 0,
         message: "Export failed",
-        error: err instanceof Error ? err.message : String(err),
+        error: invokeErrorMessage(err),
       });
     }
   }
 
   if (!timeline || !project) {
-    return <div className="grid min-h-screen place-items-center text-muted-foreground">Loading editor…</div>;
+    return (
+      <div className="grid min-h-screen place-items-center text-muted-foreground">
+        Loading editor…
+      </div>
+    );
   }
 
   return (
@@ -227,7 +357,6 @@ export function EditorView({ onNewProject }: EditorViewProps) {
             onClick={() => {
               setExportProgress(null);
               setExportOpen(true);
-              void startExport();
             }}
           >
             Export
@@ -237,14 +366,20 @@ export function EditorView({ onNewProject }: EditorViewProps) {
 
       <div className="grid min-h-0 flex-1 grid-cols-[260px_minmax(0,1fr)_300px] overflow-hidden">
         <aside className="min-h-0 overflow-hidden border-r p-4">
-          <div className="mb-3 flex items-center justify-between">
+          <div className="mb-3 flex items-center justify-between gap-2">
             <h2 className="text-sm font-medium">Filesystem</h2>
-            <Button size="sm" variant="outline" onClick={() => void api.addTrack("video").then(refresh)}>
-              <Plus className="h-3 w-3" />
-              Track
-            </Button>
+            <div className="flex shrink-0 flex-col gap-1">
+              <Button size="sm" variant="outline" onClick={() => void addTrack("video")}>
+                <Plus className="h-3 w-3" />
+                Video track
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => void addTrack("audio")}>
+                <Plus className="h-3 w-3" />
+                Audio track
+              </Button>
+            </div>
           </div>
-          <ScrollArea className="h-[calc(100%-2.5rem)] pr-3">
+          <ScrollArea className="h-[calc(100%-4.5rem)] pr-3">
             <div className="space-y-2">
               {media.map((file) => (
                 <div
@@ -303,11 +438,19 @@ export function EditorView({ onNewProject }: EditorViewProps) {
           </div>
 
           <ScrollArea className="min-h-0 flex-1">
-            <div style={{ width: duration * PIXELS_PER_SECOND + 120 }}>
+            <div
+              style={{ width: duration * PIXELS_PER_SECOND + 120 }}
+              onClick={() => setSelectedClipId(null)}
+            >
               {timeline.tracks.map((track) => (
                 <div key={track.id} className="mb-3 grid grid-cols-[110px_1fr] items-center gap-3">
-                  <div className="text-sm text-muted-foreground">{track.name}</div>
+                  <div className="text-sm text-muted-foreground">
+                    {track.name}
+                    <span className="ml-1 text-[10px] uppercase opacity-70">{track.kind}</span>
+                  </div>
                   <div
+                    data-track-id={track.id}
+                    data-track-kind={track.kind}
                     className="relative h-16 rounded-lg border bg-muted/20"
                     onDragOver={(e) => e.preventDefault()}
                     onDrop={(e) => void handleDropOnTrack(track, e)}
@@ -318,9 +461,19 @@ export function EditorView({ onNewProject }: EditorViewProps) {
                         <TimelineClip
                           key={clip.id}
                           clip={clip}
+                          selected={clip.id === selectedClipId}
+                          onSelect={() => setSelectedClipId(clip.id)}
                           onDragStart={() => setDraggingClipId(clip.id)}
                           onDragEnd={(e) => void onClipDragEnd(clip, e)}
-                          onRemove={() => void api.removeTimelineClip(clip.id).then(refresh)}
+                          onRemove={() =>
+                            void api
+                              .removeTimelineClip(clip.id)
+                              .then(refresh)
+                              .then(() => {
+                                if (selectedClipId === clip.id) setSelectedClipId(null);
+                              })
+                              .catch((err) => setError(invokeErrorMessage(err)))
+                          }
                         />
                       ))}
                     <div
@@ -355,9 +508,90 @@ export function EditorView({ onNewProject }: EditorViewProps) {
               {preview?.source_path ? ` · ${preview.source_path.split("/").pop()}` : ""}
             </div>
           </div>
+
+          <Separator className="my-4" />
+
+          <div className="space-y-3">
+            <h3 className="text-sm font-medium">Clip</h3>
+            {selectedClip ? (
+              <div className="space-y-3 text-sm">
+                <div>
+                  <p className="truncate font-medium">
+                    {selectedClip.source_path.split("/").pop()}
+                  </p>
+                  <p className="text-xs capitalize text-muted-foreground">
+                    {selectedClip.media_kind} · start {selectedClip.start.toFixed(2)}s
+                  </p>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="space-y-1">
+                    <Label htmlFor="trim-in">In (source offset)</Label>
+                    <input
+                      id="trim-in"
+                      type="number"
+                      min={0}
+                      step={0.1}
+                      className="h-9 w-full rounded-md border bg-background px-2"
+                      value={trimIn}
+                      onChange={(e) => setTrimIn(e.target.value)}
+                      onBlur={() => void applyTrim()}
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="trim-duration">Duration</Label>
+                    <input
+                      id="trim-duration"
+                      type="number"
+                      min={0.1}
+                      step={0.1}
+                      className="h-9 w-full rounded-md border bg-background px-2"
+                      value={trimDuration}
+                      onChange={(e) => setTrimDuration(e.target.value)}
+                      onBlur={() => void applyTrim()}
+                    />
+                  </div>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  source_offset {selectedClip.source_offset.toFixed(2)}s · duration{" "}
+                  {selectedClip.duration.toFixed(2)}s
+                </p>
+                <Button size="sm" variant="secondary" onClick={() => void applyTrim()}>
+                  Apply trim
+                </Button>
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground">Select a timeline clip to trim.</p>
+            )}
+          </div>
+
+          <Separator className="my-4" />
+
+          <div className="space-y-2">
+            <h3 className="text-sm font-medium">Photo default duration</h3>
+            <div className="flex items-end gap-2">
+              <div className="flex-1 space-y-1">
+                <Label htmlFor="photo-default">Seconds</Label>
+                <input
+                  id="photo-default"
+                  type="number"
+                  min={0.1}
+                  step={0.1}
+                  className="h-9 w-full rounded-md border bg-background px-2"
+                  value={photoDefaultDuration}
+                  onChange={(e) => setPhotoDefaultDuration(e.target.value)}
+                  onBlur={() => void applyPhotoDefaultDuration()}
+                />
+              </div>
+              <Button size="sm" variant="outline" onClick={() => void applyPhotoDefaultDuration()}>
+                Set
+              </Button>
+            </div>
+          </div>
+
           <Separator className="my-4" />
           <p className="text-xs text-muted-foreground">
-            Drag files from the filesystem into a track. Clips cannot overlap on the same track.
+            Drag files from the filesystem into a track. Drop clips onto another track to move them.
+            Clips cannot overlap on the same track.
           </p>
           {error && <p className="mt-3 text-sm text-red-400">{error}</p>}
         </aside>
@@ -477,7 +711,7 @@ export function EditorView({ onNewProject }: EditorViewProps) {
                       done: true,
                       progress: 0,
                       message: "Export failed",
-                      error: err instanceof Error ? err.message : String(err),
+                      error: invokeErrorMessage(err),
                     });
                   }
                 })();

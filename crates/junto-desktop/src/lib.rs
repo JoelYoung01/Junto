@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 use junto_core::{
@@ -17,6 +18,7 @@ pub use app_config::{load as load_app_config, save as save_app_config};
 pub struct AppState {
     pub project: SharedProject,
     pub mcp_port: u16,
+    pub export_running: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -133,7 +135,12 @@ fn add_clip_to_timeline(
     let project = guard.as_mut().ok_or_else(|| "no project open".to_string())?;
     let media_kind = junto_core::MediaKind::from_path(std::path::Path::new(&source_path))
         .ok_or_else(|| "unsupported media file".to_string())?;
-    let duration = duration.unwrap_or_else(|| project.default_duration_for(media_kind));
+    let duration = match duration {
+        Some(d) => d,
+        None => project
+            .duration_for_media(&source_path, media_kind)
+            .map_err(|e| e.to_string())?,
+    };
     let clip_id = project
         .file
         .timeline
@@ -144,17 +151,81 @@ fn add_clip_to_timeline(
 }
 
 #[tauri::command]
-fn move_timeline_clip(clip_id: String, start: f64, state: State<'_, AppState>) -> Result<(), String> {
+fn move_timeline_clip(
+    clip_id: String,
+    start: f64,
+    track_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let clip_id = Uuid::parse_str(&clip_id).map_err(|e| e.to_string())?;
+    let new_track_id = match track_id {
+        Some(id) => Some(Uuid::parse_str(&id).map_err(|e| e.to_string())?),
+        None => None,
+    };
+    let mut guard = state.project.write().map_err(|e| e.to_string())?;
+    let project = guard.as_mut().ok_or_else(|| "no project open".to_string())?;
+    project
+        .file
+        .timeline
+        .move_clip_to_track(clip_id, start, new_track_id)
+        .map_err(|e| e.to_string())?;
+    project.save().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn trim_timeline_clip(
+    clip_id: String,
+    source_offset: f64,
+    duration: f64,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
     let clip_id = Uuid::parse_str(&clip_id).map_err(|e| e.to_string())?;
     let mut guard = state.project.write().map_err(|e| e.to_string())?;
     let project = guard.as_mut().ok_or_else(|| "no project open".to_string())?;
     project
         .file
         .timeline
-        .move_clip(clip_id, start)
+        .trim_clip(clip_id, source_offset, duration)
         .map_err(|e| e.to_string())?;
     project.save().map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[tauri::command]
+fn set_timeline_clip_duration(
+    clip_id: String,
+    duration: f64,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let clip_id = Uuid::parse_str(&clip_id).map_err(|e| e.to_string())?;
+    let mut guard = state.project.write().map_err(|e| e.to_string())?;
+    let project = guard.as_mut().ok_or_else(|| "no project open".to_string())?;
+    project
+        .file
+        .timeline
+        .set_clip_duration(clip_id, duration)
+        .map_err(|e| e.to_string())?;
+    project.save().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn set_photo_default_duration(duration: f64, state: State<'_, AppState>) -> Result<(), String> {
+    let mut guard = state.project.write().map_err(|e| e.to_string())?;
+    let project = guard.as_mut().ok_or_else(|| "no project open".to_string())?;
+    project
+        .set_photo_default_duration(duration)
+        .map_err(|e| e.to_string())?;
+    project.save().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn get_photo_default_duration(state: State<'_, AppState>) -> Result<f64, String> {
+    let guard = state.project.read().map_err(|e| e.to_string())?;
+    let project = guard.as_ref().ok_or_else(|| "no project open".to_string())?;
+    Ok(project.file.photo_default_duration)
 }
 
 #[tauri::command]
@@ -212,6 +283,15 @@ fn update_export_settings(settings: ExportSettings, state: State<'_, AppState>) 
 
 #[tauri::command]
 async fn start_export(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    if state
+        .export_running
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Err("export already in progress".into());
+    }
+
+    let export_running = Arc::clone(&state.export_running);
     let rx = {
         let guard = state.project.read().map_err(|e| e.to_string())?;
         let project = guard.as_ref().ok_or_else(|| "no project open".to_string())?;
@@ -236,6 +316,7 @@ async fn start_export(app: AppHandle, state: State<'_, AppState>) -> Result<(), 
                 break;
             }
         }
+        export_running.store(false, Ordering::SeqCst);
     });
 
     Ok(())
@@ -402,12 +483,14 @@ pub fn run() {
         }
     }
 
+    let export_running = Arc::new(AtomicBool::new(false));
     let mcp_port = 7799u16;
     let mcp_project = Arc::clone(&project);
+    let mcp_export_running = Arc::clone(&export_running);
 
     tauri::async_runtime::spawn(async move {
         let addr: SocketAddr = format!("127.0.0.1:{mcp_port}").parse().unwrap();
-        if let Err(err) = start_server(mcp_project, addr).await {
+        if let Err(err) = start_server(mcp_project, Some(mcp_export_running), addr).await {
             tracing::error!("MCP server failed: {err}");
         }
     });
@@ -416,7 +499,11 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
-        .manage(AppState { project, mcp_port })
+        .manage(AppState {
+            project,
+            mcp_port,
+            export_running,
+        })
         .invoke_handler(tauri::generate_handler![
             get_app_config,
             complete_setup,
@@ -431,6 +518,10 @@ pub fn run() {
             get_timeline,
             add_clip_to_timeline,
             move_timeline_clip,
+            trim_timeline_clip,
+            set_timeline_clip_duration,
+            set_photo_default_duration,
+            get_photo_default_duration,
             remove_timeline_clip,
             set_playhead,
             add_track,

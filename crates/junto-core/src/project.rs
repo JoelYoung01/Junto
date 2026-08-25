@@ -1,6 +1,5 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
 
@@ -9,12 +8,14 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::error::{JuntoError, Result};
+use crate::export::export_timeline_blocking;
 use crate::filesystem::{
     ensure_project_layout, import_media_into_raw_footage, list_raw_footage, project_exists,
     scan_project_directory, consolidate_media_into_raw_footage, DirectoryScan,
 };
 use crate::media::MediaKind;
-use crate::paths::{outputs_dir, project_file};
+use crate::paths::project_file;
+use crate::probe::probe_duration;
 use crate::timeline::Timeline;
 
 pub const PROJECT_FORMAT_VERSION: u32 = 1;
@@ -142,9 +143,31 @@ impl Project {
     pub fn default_duration_for(&self, kind: MediaKind) -> f64 {
         match kind {
             MediaKind::Image => self.file.photo_default_duration,
-            MediaKind::Video => 5.0,
-            MediaKind::Audio => 5.0,
+            MediaKind::Video | MediaKind::Audio => 5.0,
         }
+    }
+
+    /// Preferred duration when adding a clip from a known source path.
+    pub fn duration_for_media(&self, relative_path: &str, kind: MediaKind) -> Result<f64> {
+        match kind {
+            MediaKind::Image => Ok(self.file.photo_default_duration),
+            MediaKind::Video | MediaKind::Audio => {
+                let abs = self.resolve_path(relative_path);
+                probe_duration(&abs)
+            }
+        }
+    }
+
+    /// Set the default on-timeline duration used for newly added photos.
+    /// Caller is responsible for persisting via [`Project::save`].
+    pub fn set_photo_default_duration(&mut self, duration: f64) -> Result<()> {
+        if duration <= 0.0 {
+            return Err(JuntoError::InvalidProject(
+                "photo_default_duration must be greater than 0".into(),
+            ));
+        }
+        self.file.photo_default_duration = duration;
+        Ok(())
     }
 
     pub fn touch(&mut self) {
@@ -152,13 +175,16 @@ impl Project {
     }
 
     pub fn export_blocking(&self) -> Result<PathBuf> {
-        export_timeline_blocking(self)
+        export_timeline_blocking(self, None)
     }
 
     pub fn export_async(&self) -> mpsc::Receiver<ExportProgress> {
         let project = self.clone_for_export();
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
+            let tx_cb = |progress: ExportProgress| {
+                let _ = tx.send(progress);
+            };
             let _ = tx.send(ExportProgress {
                 done: false,
                 progress: 0.05,
@@ -167,7 +193,7 @@ impl Project {
                 error: None,
             });
 
-            match export_timeline_blocking(&project) {
+            match export_timeline_blocking(&project, Some(&tx_cb)) {
                 Ok(path) => {
                     let _ = tx.send(ExportProgress {
                         done: true,
@@ -197,150 +223,4 @@ impl Project {
             file: self.file.clone(),
         }
     }
-}
-
-fn export_timeline_blocking(project: &Project) -> Result<PathBuf> {
-    let settings = &project.file.export_settings;
-    fs::create_dir_all(outputs_dir(&project.root))?;
-
-    let timestamp = Utc::now().format("%Y%m%d_%H%M%S");
-    let output = outputs_dir(&project.root).join(format!("export_{timestamp}.mp4"));
-
-    let video_clips: Vec<_> = project
-        .file
-        .timeline
-        .clips
-        .iter()
-        .filter(|c| matches!(c.media_kind, MediaKind::Video | MediaKind::Image))
-        .collect();
-
-    if video_clips.is_empty() {
-        return Err(JuntoError::Export("timeline has no video or image clips".into()));
-    }
-
-    let mut sorted = video_clips;
-    sorted.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap());
-
-    let temp_dir = project.root.join(".junto").join("export_tmp");
-    fs::create_dir_all(&temp_dir)?;
-    let list_file = temp_dir.join("concat.txt");
-    let mut list_contents = String::new();
-
-    for (idx, clip) in sorted.iter().enumerate() {
-        let source = project.resolve_path(&clip.source_path);
-        if !source.exists() {
-            return Err(JuntoError::Export(format!(
-                "missing source file: {}",
-                source.display()
-            )));
-        }
-
-        match clip.media_kind {
-            MediaKind::Image => {
-                let seg = temp_dir.join(format!("seg_{idx}.mp4"));
-                let duration = clip.duration.max(0.1);
-                let status = Command::new("ffmpeg")
-                    .args([
-                        "-y",
-                        "-loop",
-                        "1",
-                        "-i",
-                        &source.to_string_lossy(),
-                        "-t",
-                        &duration.to_string(),
-                        "-vf",
-                        &format!(
-                            "scale={}:{}:force_original_aspect_ratio=decrease,pad={}:{}:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
-                            settings.width, settings.height, settings.width, settings.height
-                        ),
-                        "-r",
-                        &settings.fps.to_string(),
-                        "-c:v",
-                        &settings.video_codec,
-                        "-pix_fmt",
-                        "yuv420p",
-                        &seg.to_string_lossy(),
-                    ])
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status()
-                    .map_err(|e| JuntoError::Export(e.to_string()))?;
-                if !status.success() {
-                    return Err(JuntoError::Export("ffmpeg image segment failed".into()));
-                }
-                list_contents.push_str(&format!("file '{}'\n", seg.display()));
-            }
-            MediaKind::Video => {
-                let seg = temp_dir.join(format!("seg_{idx}.mp4"));
-                let duration = clip.duration.max(0.1);
-                let status = Command::new("ffmpeg")
-                    .args([
-                        "-y",
-                        "-ss",
-                        &clip.source_offset.to_string(),
-                        "-i",
-                        &source.to_string_lossy(),
-                        "-t",
-                        &duration.to_string(),
-                        "-vf",
-                        &format!(
-                            "scale={}:{}:force_original_aspect_ratio=decrease,pad={}:{}:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
-                            settings.width, settings.height, settings.width, settings.height
-                        ),
-                        "-r",
-                        &settings.fps.to_string(),
-                        "-c:v",
-                        &settings.video_codec,
-                        "-c:a",
-                        &settings.audio_codec,
-                        "-pix_fmt",
-                        "yuv420p",
-                        &seg.to_string_lossy(),
-                    ])
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status()
-                    .map_err(|e| JuntoError::Export(e.to_string()))?;
-                if !status.success() {
-                    return Err(JuntoError::Export("ffmpeg video segment failed".into()));
-                }
-                list_contents.push_str(&format!("file '{}'\n", seg.display()));
-            }
-            MediaKind::Audio => {}
-        }
-    }
-
-    fs::write(&list_file, list_contents)?;
-
-    let status = Command::new("ffmpeg")
-        .args([
-            "-y",
-            "-f",
-            "concat",
-            "-safe",
-            "0",
-            "-i",
-            &list_file.to_string_lossy(),
-            "-c:v",
-            &settings.video_codec,
-            "-crf",
-            &settings.crf.to_string(),
-            "-c:a",
-            &settings.audio_codec,
-            "-movflags",
-            "+faststart",
-            &output.to_string_lossy(),
-        ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map_err(|e| JuntoError::Export(e.to_string()))?;
-
-    let _ = fs::remove_dir_all(&temp_dir);
-
-    if !status.success() {
-        return Err(JuntoError::Export("ffmpeg concat export failed".into()));
-    }
-
-    Ok(output)
 }
