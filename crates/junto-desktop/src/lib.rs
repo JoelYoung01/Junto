@@ -483,12 +483,14 @@ pub fn run() {
         }
     }
 
+    let export_running = Arc::new(AtomicBool::new(false));
     let mcp_port = 7799u16;
     let mcp_project = Arc::clone(&project);
+    let mcp_export_running = Arc::clone(&export_running);
 
     tauri::async_runtime::spawn(async move {
         let addr: SocketAddr = format!("127.0.0.1:{mcp_port}").parse().unwrap();
-        if let Err(err) = start_server(mcp_project, addr).await {
+        if let Err(err) = start_server(mcp_project, Some(mcp_export_running), addr).await {
             tracing::error!("MCP server failed: {err}");
         }
     });
@@ -500,7 +502,7 @@ pub fn run() {
         .manage(AppState {
             project,
             mcp_port,
-            export_running: Arc::new(AtomicBool::new(false)),
+            export_running,
         })
         .invoke_handler(tauri::generate_handler![
             get_app_config,

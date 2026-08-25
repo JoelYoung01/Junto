@@ -80,7 +80,7 @@ async fn mcp_tools_drive_project_workflow() {
     assert_eq!(imported.len(), 1);
 
     let shared = Arc::new(RwLock::new(Some(project)));
-    let mut app = router(Arc::clone(&shared));
+    let mut app = router(Arc::clone(&shared), None);
 
     let health = app
         .clone()

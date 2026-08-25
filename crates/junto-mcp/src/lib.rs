@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 use axum::extract::State;
@@ -15,6 +16,7 @@ pub type SharedProject = Arc<RwLock<Option<Project>>>;
 #[derive(Clone)]
 pub struct McpState {
     pub project: SharedProject,
+    pub export_running: Option<Arc<AtomicBool>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -36,16 +38,23 @@ struct ToolContent {
     text: String,
 }
 
-pub async fn start_server(project: SharedProject, addr: SocketAddr) -> anyhow::Result<()> {
-    let app = router(project);
+pub async fn start_server(
+    project: SharedProject,
+    export_running: Option<Arc<AtomicBool>>,
+    addr: SocketAddr,
+) -> anyhow::Result<()> {
+    let app = router(project, export_running);
     let listener = TcpListener::bind(addr).await?;
     tracing::info!("Junto MCP listening on http://{addr}");
     axum::serve(listener, app).await?;
     Ok(())
 }
 
-pub fn router(project: SharedProject) -> axum::Router {
-    let state = McpState { project };
+pub fn router(project: SharedProject, export_running: Option<Arc<AtomicBool>>) -> axum::Router {
+    let state = McpState {
+        project,
+        export_running,
+    };
     axum::Router::new()
         .route("/health", get(health))
         .route("/mcp", post(handle_tool))
@@ -82,7 +91,7 @@ async fn handle_tool(
     State(state): State<McpState>,
     Json(req): Json<ToolCallRequest>,
 ) -> Result<Json<ToolCallResponse>, StatusCode> {
-    let result = tokio::task::spawn_blocking(move || execute_tool(state.project, req))
+    let result = tokio::task::spawn_blocking(move || execute_tool(state, req))
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
@@ -98,8 +107,8 @@ async fn handle_tool(
     }
 }
 
-fn execute_tool(project: SharedProject, req: ToolCallRequest) -> Result<ToolCallResponse, String> {
-    let mut guard = project.write().map_err(|e| e.to_string())?;
+fn execute_tool(state: McpState, req: ToolCallRequest) -> Result<ToolCallResponse, String> {
+    let mut guard = state.project.write().map_err(|e| e.to_string())?;
     let project = guard.as_mut().ok_or_else(|| "no project open".to_string())?;
     let args = req.arguments.unwrap_or(json!({}));
 
@@ -227,7 +236,12 @@ fn execute_tool(project: SharedProject, req: ToolCallRequest) -> Result<ToolCall
             json!({ "playhead": project.file.timeline.playhead }).to_string()
         }
         "export_video" => {
+            let export_guard = match state.export_running.as_ref() {
+                Some(flag) => Some(ExportRunningGuard::try_acquire(Arc::clone(flag))?),
+                None => None,
+            };
             let path = project.export_blocking().map_err(|e| e.to_string())?;
+            drop(export_guard);
             json!({ "output_path": path }).to_string()
         }
         other => return Err(format!("unknown tool: {other}")),
@@ -247,4 +261,24 @@ fn parse_arg<T: for<'de> Deserialize<'de>>(args: &Value, key: &str) -> Result<T,
         .cloned()
         .ok_or_else(|| format!("missing argument: {key}"))
         .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
+}
+
+struct ExportRunningGuard(Arc<AtomicBool>);
+
+impl ExportRunningGuard {
+    fn try_acquire(flag: Arc<AtomicBool>) -> Result<Self, String> {
+        if flag
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return Err("export already in progress".into());
+        }
+        Ok(Self(flag))
+    }
+}
+
+impl Drop for ExportRunningGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
 }
