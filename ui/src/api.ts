@@ -78,10 +78,22 @@ export interface PreviewFrame {
   playhead: number;
 }
 
+export interface McpInfo {
+  url: string;
+  tools_url: string;
+  health_url: string;
+}
+
+export function invokeErrorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === "string") return err;
+  return String(err);
+}
+
 export const api = {
   getAppConfig: () => invoke<AppConfig>("get_app_config"),
   completeSetup: () => invoke<void>("complete_setup"),
-  getMcpInfo: () => invoke<{ url: string; tools_url: string; health_url: string }>("get_mcp_info"),
+  getMcpInfo: () => invoke<McpInfo>("get_mcp_info"),
   scanDirectory: (path: string) => invoke<DirectoryScan>("scan_directory", { path }),
   createProject: (path: string, name: string) =>
     invoke<ProjectSummary>("create_project", { path, name }),
@@ -93,8 +105,19 @@ export const api = {
   getTimeline: () => invoke<Timeline>("get_timeline"),
   addClipToTimeline: (trackId: string, sourcePath: string, start: number, duration?: number) =>
     invoke<string>("add_clip_to_timeline", { trackId, sourcePath, start, duration }),
-  moveTimelineClip: (clipId: string, start: number) =>
-    invoke<void>("move_timeline_clip", { clipId, start }),
+  moveTimelineClip: (clipId: string, start: number, trackId?: string) =>
+    invoke<void>("move_timeline_clip", {
+      clipId,
+      start,
+      ...(trackId !== undefined ? { trackId } : {}),
+    }),
+  trimTimelineClip: (clipId: string, sourceOffset: number, duration: number) =>
+    invoke<void>("trim_timeline_clip", { clipId, sourceOffset, duration }),
+  setTimelineClipDuration: (clipId: string, duration: number) =>
+    invoke<void>("set_timeline_clip_duration", { clipId, duration }),
+  setPhotoDefaultDuration: (duration: number) =>
+    invoke<void>("set_photo_default_duration", { duration }),
+  getPhotoDefaultDuration: () => invoke<number>("get_photo_default_duration"),
   removeTimelineClip: (clipId: string) => invoke<void>("remove_timeline_clip", { clipId }),
   setPlayhead: (position: number) => invoke<void>("set_playhead", { position }),
   addTrack: (kind: "video" | "audio") => invoke<string>("add_track", { kind }),

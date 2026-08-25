@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Copy, FolderPlus, Plug } from "lucide-react";
 
-import { api, copyText, mcpBundleInstructions, pickDirectory } from "@/api";
+import { api, copyText, invokeErrorMessage, mcpBundleInstructions, pickDirectory } from "@/api";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -18,15 +18,59 @@ interface SetupViewProps {
   onOpenProject: () => void;
 }
 
+type HealthStatus = "checking" | "connected" | "unreachable";
+
 export function SetupView({ onComplete, onOpenProject }: SetupViewProps) {
   const [mcpUrl, setMcpUrl] = useState("");
+  const [healthUrl, setHealthUrl] = useState("");
+  const [healthStatus, setHealthStatus] = useState<HealthStatus>("checking");
+  const [lastChecked, setLastChecked] = useState<Date | null>(null);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const pathRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    void api.getMcpInfo().then((info) => setMcpUrl(info.url));
+    let cancelled = false;
+    let timer: number | null = null;
+
+    async function pollHealth(url: string) {
+      try {
+        const response = await fetch(url, { method: "GET", cache: "no-store" });
+        if (!cancelled) {
+          setHealthStatus(response.ok ? "connected" : "unreachable");
+          setLastChecked(new Date());
+        }
+      } catch {
+        if (!cancelled) {
+          setHealthStatus("unreachable");
+          setLastChecked(new Date());
+        }
+      }
+    }
+
+    void api
+      .getMcpInfo()
+      .then((info) => {
+        if (cancelled) return;
+        setMcpUrl(info.url);
+        setHealthUrl(info.health_url);
+        void pollHealth(info.health_url);
+        timer = window.setInterval(() => {
+          void pollHealth(info.health_url);
+        }, 5000);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setHealthStatus("unreachable");
+          setError(invokeErrorMessage(err));
+        }
+      });
+
+    return () => {
+      cancelled = true;
+      if (timer) window.clearInterval(timer);
+    };
   }, []);
 
   async function finishSetup() {
@@ -36,7 +80,7 @@ export function SetupView({ onComplete, onOpenProject }: SetupViewProps) {
       await api.completeSetup();
       onComplete();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(invokeErrorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -48,7 +92,7 @@ export function SetupView({ onComplete, onOpenProject }: SetupViewProps) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(invokeErrorMessage(err));
     }
   }
 
@@ -67,11 +111,25 @@ export function SetupView({ onComplete, onOpenProject }: SetupViewProps) {
       await api.openProject(selected);
       onOpenProject();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(invokeErrorMessage(err));
     } finally {
       setBusy(false);
     }
   }
+
+  const healthLabel =
+    healthStatus === "connected"
+      ? "Connected"
+      : healthStatus === "unreachable"
+        ? "Unreachable"
+        : "Checking…";
+
+  const healthClass =
+    healthStatus === "connected"
+      ? "text-emerald-400"
+      : healthStatus === "unreachable"
+        ? "text-red-400"
+        : "text-muted-foreground";
 
   return (
     <div className="grid min-h-screen place-items-center p-6">
@@ -91,7 +149,14 @@ export function SetupView({ onComplete, onOpenProject }: SetupViewProps) {
             </div>
             <p className="text-sm text-muted-foreground">
               Copy this MCP configuration into Cursor, Claude Code, or another MCP-capable agent.
-              Connection status is not verified yet.
+            </p>
+            <p className={`text-sm ${healthClass}`}>
+              MCP status: {healthLabel}
+              {lastChecked
+                ? ` · last checked ${lastChecked.toLocaleTimeString()}`
+                : healthUrl
+                  ? ""
+                  : " · waiting for health URL"}
             </p>
             <pre className="overflow-auto rounded-lg border bg-muted/30 p-3 text-xs">
               {mcpBundleInstructions(mcpUrl)}
