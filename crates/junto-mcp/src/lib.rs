@@ -37,17 +37,20 @@ struct ToolContent {
 }
 
 pub async fn start_server(project: SharedProject, addr: SocketAddr) -> anyhow::Result<()> {
-    let state = McpState { project };
-    let app = axum::Router::new()
-        .route("/health", get(health))
-        .route("/mcp", post(handle_tool))
-        .route("/tools", get(list_tools))
-        .with_state(state);
-
+    let app = router(project);
     let listener = TcpListener::bind(addr).await?;
     tracing::info!("Junto MCP listening on http://{addr}");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+pub fn router(project: SharedProject) -> axum::Router {
+    let state = McpState { project };
+    axum::Router::new()
+        .route("/health", get(health))
+        .route("/mcp", post(handle_tool))
+        .route("/tools", get(list_tools))
+        .with_state(state)
 }
 
 async fn health() -> Json<Value> {

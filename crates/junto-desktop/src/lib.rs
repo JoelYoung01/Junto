@@ -3,11 +3,11 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use junto_core::{
-    DirectoryScan, ExportProgress, ExportSettings, Project, ScannedMediaFile, Timeline, TrackKind,
+    DirectoryScan, ExportSettings, Project, ScannedMediaFile, Timeline, TrackKind,
 };
 use junto_mcp::{start_server, SharedProject};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
 
 mod app_config;
@@ -31,7 +31,6 @@ pub struct ProjectSummary {
     pub duration_seconds: f64,
 }
 
-#[tauri::command]
 #[tauri::command]
 fn get_app_config() -> Result<AppConfig, String> {
     app_config::load().map_err(|e| e.to_string())

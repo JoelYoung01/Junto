@@ -3,6 +3,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export PATH="${HOME}/.cargo/bin:/usr/local/cargo/bin:${PATH}"
+# rust-toolchain.toml pins the exact Rust version for this repo
+rustup show active-toolchain >/dev/null 2>&1 || rustup toolchain install
 
 echo "Installing UI dependencies (pnpm)..."
 cd "$ROOT"
