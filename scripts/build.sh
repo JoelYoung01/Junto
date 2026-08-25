@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export PATH="${HOME}/.cargo/bin:/usr/local/cargo/bin:${PATH}"
+rustup default stable >/dev/null 2>&1 || true
 
 echo "Installing UI dependencies (pnpm)..."
 cd "$ROOT"
