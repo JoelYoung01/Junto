@@ -1,0 +1,19 @@
+{
+  "name": "junto-plugins",
+  "owner": {
+    "name": "JoelYoung01"
+  },
+  "metadata": {
+    "description": "Plugins for the Junto desktop video editor",
+    "pluginRoot": "plugins"
+  },
+  "plugins": [
+    {
+      "name": "junto",
+      "source": "junto",
+      "description": "Local Junto MCP + agent skills for timeline editing and export",
+      "version": "1.0.0",
+      "keywords": ["junto", "mcp", "video", "timeline"]
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "junto",
+  "version": "1.0.0",
+  "description": "Connect Cursor/agents to a running Junto desktop app via local MCP, with usage guidance and a brief architecture overview.",
+  "author": {
+    "name": "JoelYoung01",
+    "url": "https://github.com/JoelYoung01"
+  },
+  "homepage": "https://github.com/JoelYoung01/Junto",
+  "repository": "https://github.com/JoelYoung01/Junto",
+  "license": "MIT",
+  "keywords": [
+    "junto",
+    "video",
+    "timeline",
+    "mcp",
+    "ffmpeg",
+    "tauri"
+  ]
+}
