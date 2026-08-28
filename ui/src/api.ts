@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 import { open as openUrl } from "@tauri-apps/plugin-shell";
 
@@ -83,6 +84,17 @@ export interface PreviewFrame {
   source_path: string;
   media_kind: "video" | "image" | "audio";
   playhead: number;
+  generation?: number;
+}
+
+export interface PreviewFrameEvent {
+  playhead: number;
+  source_path: string;
+  media_kind: "video" | "image" | "audio";
+  max_height: number;
+  /** Raw JPEG bytes from the PreviewSession worker. */
+  jpeg: number[] | Uint8Array;
+  generation: number;
 }
 
 export interface McpInfo {
@@ -119,6 +131,9 @@ export const api = {
       start,
       ...(trackId !== undefined ? { trackId } : {}),
     }),
+  moveTimelineClips: (
+    moves: { clipId: string; start: number; trackId: string }[],
+  ) => invoke<void>("move_timeline_clips", { moves }),
   trimTimelineClip: (clipId: string, sourceOffset: number, duration: number) =>
     invoke<void>("trim_timeline_clip", { clipId, sourceOffset, duration }),
   setTimelineClipDuration: (clipId: string, duration: number) =>
@@ -126,6 +141,8 @@ export const api = {
   setPhotoDefaultDuration: (duration: number) =>
     invoke<void>("set_photo_default_duration", { duration }),
   getPhotoDefaultDuration: () => invoke<number>("get_photo_default_duration"),
+  getMediaDuration: (sourcePath: string) =>
+    invoke<number>("get_media_duration", { sourcePath }),
   removeTimelineClip: (clipId: string) => invoke<void>("remove_timeline_clip", { clipId }),
   setPlayhead: (position: number) => invoke<void>("set_playhead", { position }),
   addTrack: (kind: "video" | "audio") => invoke<string>("add_track", { kind }),
@@ -137,10 +154,20 @@ export const api = {
     invoke<string | null>("get_media_frame", { sourcePath, timeSeconds, maxHeight }),
   getPreviewFrame: (playhead?: number, maxHeight?: number) =>
     invoke<PreviewFrame | null>("get_preview_frame", { playhead, maxHeight }),
+  setPreviewTarget: (playhead: number, maxHeight?: number, scrubbing?: boolean) =>
+    invoke<void>("set_preview_target", { playhead, maxHeight, scrubbing }),
   onExportProgress: (handler: (progress: ExportProgress) => void) =>
     listen<ExportProgress>("export-progress", (event) => handler(event.payload)),
   onRawFootageChanged: (handler: () => void) =>
     listen("raw-footage-changed", () => handler()),
+  onPreviewFrame: (handler: (frame: PreviewFrameEvent) => void) =>
+    listen<PreviewFrameEvent>("preview-frame", (event) => handler(event.payload)),
+  /** Native OS file drops (requires Tauri dragDropEnabled; mutually exclusive with HTML5 DnD). */
+  onOsFileDrop: (handler: (paths: string[], position: { x: number; y: number } | null) => void) =>
+    getCurrentWebview().onDragDropEvent((event) => {
+      if (event.payload.type !== "drop") return;
+      handler(event.payload.paths, event.payload.position ?? null);
+    }),
 };
 
 export async function pickDirectory(title: string) {

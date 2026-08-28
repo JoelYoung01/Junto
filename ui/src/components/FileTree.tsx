@@ -87,6 +87,11 @@ function EntryIcon({ node }: { node: TreeNode }) {
 interface FileTreeProps {
   entries: ProjectEntry[];
   onAddMedia: (relativePath: string, mediaKind: "video" | "image" | "audio") => void;
+  onMediaPointerDown?: (
+    relativePath: string,
+    mediaKind: "video" | "image" | "audio",
+    event: React.PointerEvent<HTMLDivElement>,
+  ) => void;
 }
 
 function TreeNodeRow({
@@ -95,12 +100,18 @@ function TreeNodeRow({
   expanded,
   onToggle,
   onAddMedia,
+  onMediaPointerDown,
 }: {
   node: TreeNode;
   depth: number;
   expanded: Set<string>;
   onToggle: (path: string) => void;
   onAddMedia: (relativePath: string, mediaKind: "video" | "image" | "audio") => void;
+  onMediaPointerDown?: (
+    relativePath: string,
+    mediaKind: "video" | "image" | "audio",
+    event: React.PointerEvent<HTMLDivElement>,
+  ) => void;
 }) {
   const isDir = node.entryKind === "directory";
   const isExpanded = isDir && expanded.has(node.relativePath);
@@ -129,11 +140,14 @@ function TreeNodeRow({
         )}
 
         <div
-          className={`flex min-w-0 flex-1 items-center gap-1.5 ${isMedia ? "cursor-grab" : ""}`}
-          draggable={Boolean(isMedia)}
-          onDragStart={
+          className={`flex min-w-0 flex-1 items-center gap-1.5 ${isMedia ? "cursor-grab active:cursor-grabbing" : ""}`}
+          onPointerDown={
             isMedia
-              ? (e) => e.dataTransfer.setData("text/plain", node.relativePath)
+              ? (e) => {
+                  if (e.button !== 0) return;
+                  e.preventDefault();
+                  onMediaPointerDown?.(node.relativePath, node.mediaKind!, e);
+                }
               : undefined
           }
         >
@@ -169,13 +183,14 @@ function TreeNodeRow({
             expanded={expanded}
             onToggle={onToggle}
             onAddMedia={onAddMedia}
+            onMediaPointerDown={onMediaPointerDown}
           />
         ))}
     </>
   );
 }
 
-export function FileTree({ entries, onAddMedia }: FileTreeProps) {
+export function FileTree({ entries, onAddMedia, onMediaPointerDown }: FileTreeProps) {
   const tree = useMemo(() => buildTree(entries), [entries]);
   const [expanded, setExpanded] = useState<Set<string> | null>(null);
 
@@ -217,6 +232,7 @@ export function FileTree({ entries, onAddMedia }: FileTreeProps) {
           expanded={expanded}
           onToggle={toggle}
           onAddMedia={onAddMedia}
+          onMediaPointerDown={onMediaPointerDown}
         />
       ))}
     </div>

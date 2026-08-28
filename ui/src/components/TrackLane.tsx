@@ -2,42 +2,52 @@ import { Clip, Track } from "@/api";
 import { TimelineClip } from "@/components/TimelineClip";
 import { useVerticalPointerDrag } from "@/hooks/usePointerDrag";
 import {
+  CLIP_INSET,
   DEFAULT_TRACK_HEIGHT,
-  PIXELS_PER_SECOND,
+  TRACK_GAP,
+  TRACK_LABEL_WIDTH,
   clampTrackHeight,
+  clipHeightForLane,
+  timelineContentWidthPx,
 } from "@/lib/timelineLayout";
+
+export interface DropGhost {
+  start: number;
+  duration: number;
+}
 
 interface TrackLaneProps {
   track: Track;
   clips: Clip[];
+  /** Timeline duration used to size the content lane to the shared pixel scale. */
+  timelineDuration: number;
+  pixelsPerSecond: number;
   laneHeight: number;
-  playhead: number;
-  selectedClipId: string | null;
+  selectedClipIds: ReadonlySet<string>;
+  draggingClipIds?: ReadonlySet<string>;
+  dropGhosts?: DropGhost[];
   onResize: (trackId: string, deltaY: number) => void;
   onResizeStart: () => void;
   onResizeEnd: () => void;
-  onDragOver: (event: React.DragEvent<HTMLDivElement>) => void;
-  onDrop: (event: React.DragEvent<HTMLDivElement>) => void;
-  onSelectClip: (clipId: string) => void;
-  onClipDragStart: (clipId: string) => void;
-  onClipDragEnd: (clip: Clip, event: React.MouseEvent<HTMLDivElement>) => void;
+  onSelectClip: (clipId: string, event: React.PointerEvent) => void;
+  onClipMovePointerDown: (clip: Clip, event: React.PointerEvent<HTMLDivElement>) => void;
   onRemoveClip: (clipId: string) => void;
 }
 
 export function TrackLane({
   track,
   clips,
+  timelineDuration,
+  pixelsPerSecond,
   laneHeight,
-  playhead,
-  selectedClipId,
+  selectedClipIds,
+  draggingClipIds,
+  dropGhosts = [],
   onResize,
   onResizeStart,
   onResizeEnd,
-  onDragOver,
-  onDrop,
   onSelectClip,
-  onClipDragStart,
-  onClipDragEnd,
+  onClipMovePointerDown,
   onRemoveClip,
 }: TrackLaneProps) {
   const onResizePointerDown = useVerticalPointerDrag(
@@ -45,36 +55,55 @@ export function TrackLane({
     { onStart: onResizeStart, onEnd: onResizeEnd },
   );
 
+  const ghostHeight = clipHeightForLane(laneHeight);
+  const contentWidth = timelineContentWidthPx(timelineDuration, pixelsPerSecond);
+  const ghostTone = track.kind === "audio" ? "bg-amber-500" : "bg-sky-500";
+
   return (
-    <div className="mb-3 grid grid-cols-[110px_1fr] items-start gap-3">
+    <div
+      className="mb-3 grid items-start"
+      style={{
+        gridTemplateColumns: `${TRACK_LABEL_WIDTH}px ${contentWidth}px`,
+        columnGap: TRACK_GAP,
+      }}
+      data-track-id={track.id}
+      data-track-kind={track.kind}
+    >
       <div className="sticky left-0 z-10 bg-background pr-2 pt-2 text-sm text-muted-foreground">
         {track.name}
         <span className="ml-1 text-[10px] uppercase opacity-70">{track.kind}</span>
       </div>
       <div
-        data-track-id={track.id}
-        data-track-kind={track.kind}
+        data-track-content
         className="group relative rounded-lg border bg-muted/20"
         style={{ height: laneHeight }}
-        onDragOver={onDragOver}
-        onDrop={onDrop}
       >
         {clips.map((clip) => (
           <TimelineClip
             key={clip.id}
             clip={clip}
+            pixelsPerSecond={pixelsPerSecond}
             laneHeight={laneHeight}
-            selected={clip.id === selectedClipId}
-            onSelect={() => onSelectClip(clip.id)}
-            onDragStart={() => onClipDragStart(clip.id)}
-            onDragEnd={(e) => onClipDragEnd(clip, e)}
+            selected={selectedClipIds.has(clip.id)}
+            dragging={draggingClipIds?.has(clip.id) ?? false}
+            onSelect={(e) => onSelectClip(clip.id, e)}
+            onMovePointerDown={(e) => onClipMovePointerDown(clip, e)}
             onRemove={() => onRemoveClip(clip.id)}
           />
         ))}
-        <div
-          className="pointer-events-none absolute top-0 bottom-0 z-20 w-0.5 bg-rose-500"
-          style={{ left: playhead * PIXELS_PER_SECOND }}
-        />
+        {dropGhosts.map((ghost, index) => (
+          <div
+            key={`ghost-${track.id}-${index}-${ghost.start}`}
+            aria-hidden
+            className={`pointer-events-none absolute z-20 rounded-md ${ghostTone} opacity-50`}
+            style={{
+              top: CLIP_INSET,
+              height: ghostHeight,
+              left: ghost.start * pixelsPerSecond,
+              width: Math.max(ghost.duration * pixelsPerSecond, 24),
+            }}
+          />
+        ))}
         <div
           role="separator"
           aria-orientation="horizontal"
@@ -106,4 +135,9 @@ export function applyTrackHeightDelta(
     ...trackHeights,
     [trackId]: clampTrackHeight(current + deltaY),
   };
+}
+
+/** Content lane element used for time ↔ x mapping (excludes the sticky label). */
+export function trackContentEl(trackRow: Element): HTMLElement | null {
+  return trackRow.querySelector("[data-track-content]");
 }
