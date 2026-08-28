@@ -12,8 +12,10 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
 mod app_config;
+mod preview_session;
 mod raw_footage_watcher;
 
+use preview_session::PreviewSession;
 use raw_footage_watcher::RawFootageWatcher;
 
 pub use app_config::{load as load_app_config, save as save_app_config};
@@ -23,6 +25,7 @@ pub struct AppState {
     pub mcp_port: u16,
     pub export_running: Arc<AtomicBool>,
     footage_watcher: Mutex<Option<RawFootageWatcher>>,
+    preview_session: Mutex<Option<PreviewSession>>,
 }
 
 fn sync_raw_footage_watcher(app: &AppHandle, state: &AppState) {
@@ -38,6 +41,11 @@ fn sync_raw_footage_watcher(app: &AppHandle, state: &AppState) {
     if let Some(root) = project_root {
         *watcher_guard = Some(RawFootageWatcher::start(app.clone(), root));
     }
+}
+
+fn sync_preview_session(app: &AppHandle, state: &AppState) {
+    let mut session_guard = state.preview_session.lock().expect("preview session lock");
+    *session_guard = Some(PreviewSession::start(app.clone(), Arc::clone(&state.project)));
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,6 +110,7 @@ fn create_project(
     app_config::remember_project(&project.root).map_err(|e| e.to_string())?;
     *state.project.write().map_err(|e| e.to_string())? = Some(project);
     sync_raw_footage_watcher(&app, &state);
+    sync_preview_session(&app, &state);
     Ok(summary)
 }
 
@@ -113,6 +122,7 @@ fn open_project(path: String, app: AppHandle, state: State<'_, AppState>) -> Res
     app_config::remember_project(&project.root).map_err(|e| e.to_string())?;
     *state.project.write().map_err(|e| e.to_string())? = Some(project);
     sync_raw_footage_watcher(&app, &state);
+    sync_preview_session(&app, &state);
     Ok(summary)
 }
 
@@ -215,6 +225,36 @@ fn move_timeline_clip(
     Ok(())
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TimelineClipMove {
+    clip_id: String,
+    start: f64,
+    track_id: String,
+}
+
+#[tauri::command]
+fn move_timeline_clips(
+    moves: Vec<TimelineClipMove>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let mut parsed = Vec::with_capacity(moves.len());
+    for m in moves {
+        let clip_id = Uuid::parse_str(&m.clip_id).map_err(|e| e.to_string())?;
+        let track_id = Uuid::parse_str(&m.track_id).map_err(|e| e.to_string())?;
+        parsed.push((clip_id, m.start, track_id));
+    }
+    let mut guard = state.project.write().map_err(|e| e.to_string())?;
+    let project = guard.as_mut().ok_or_else(|| "no project open".to_string())?;
+    project
+        .file
+        .timeline
+        .move_clips(&parsed)
+        .map_err(|e| e.to_string())?;
+    project.save().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 fn trim_timeline_clip(
     clip_id: String,
@@ -271,6 +311,18 @@ fn get_photo_default_duration(state: State<'_, AppState>) -> Result<f64, String>
 }
 
 #[tauri::command]
+fn get_media_duration(source_path: String, state: State<'_, AppState>) -> Result<f64, String> {
+    let guard = state.project.read().map_err(|e| e.to_string())?;
+    let project = guard.as_ref().ok_or_else(|| "no project open".to_string())?;
+    let source_path = project.relative_source_path(&source_path);
+    let media_kind = junto_core::MediaKind::from_path(std::path::Path::new(&source_path))
+        .ok_or_else(|| "unsupported media file".to_string())?;
+    project
+        .duration_for_media(&source_path, media_kind)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn remove_timeline_clip(clip_id: String, state: State<'_, AppState>) -> Result<(), String> {
     let clip_id = Uuid::parse_str(&clip_id).map_err(|e| e.to_string())?;
     let mut guard = state.project.write().map_err(|e| e.to_string())?;
@@ -290,6 +342,22 @@ fn set_playhead(position: f64, state: State<'_, AppState>) -> Result<(), String>
     let project = guard.as_mut().ok_or_else(|| "no project open".to_string())?;
     // Playhead is ephemeral UI state — avoid writing project.json on every tick.
     project.file.timeline.playhead = position.max(0.0);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_preview_target(
+    playhead: f64,
+    max_height: Option<u32>,
+    scrubbing: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let height = max_height.unwrap_or(360);
+    let scrubbing = scrubbing.unwrap_or(false);
+    let session = state.preview_session.lock().map_err(|e| e.to_string())?;
+    if let Some(session) = session.as_ref() {
+        session.set_target(playhead, height, scrubbing);
+    }
     Ok(())
 }
 
@@ -385,7 +453,7 @@ async fn get_media_frame(
     let time = time_seconds.unwrap_or(0.0);
     let height = max_height.unwrap_or(320);
     let jpeg = tauri::async_runtime::spawn_blocking(move || {
-        junto_core::frame_jpeg_cached(&root, &relative, &abs, time, height)
+        junto_core::frame_jpeg_cached_hot(&root, &relative, &abs, time, height)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -461,7 +529,7 @@ async fn get_preview_frame(
 
     let (root, source_path, media_kind, abs, local, height, t) = snapshot;
     let jpeg = tauri::async_runtime::spawn_blocking(move || {
-        junto_core::frame_jpeg_cached(&root, &source_path, &abs, local, height)
+        junto_core::frame_jpeg_cached_hot(&root, &source_path, &abs, local, height)
             .map(|jpeg| (jpeg, source_path, media_kind))
     })
     .await
@@ -553,10 +621,12 @@ pub fn run() {
             mcp_port,
             export_running,
             footage_watcher: Mutex::new(None),
+            preview_session: Mutex::new(None),
         })
         .setup(|app| {
             let state = app.state::<AppState>();
             sync_raw_footage_watcher(app.handle(), &state);
+            sync_preview_session(app.handle(), &state);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -575,12 +645,15 @@ pub fn run() {
             get_timeline,
             add_clip_to_timeline,
             move_timeline_clip,
+            move_timeline_clips,
             trim_timeline_clip,
             set_timeline_clip_duration,
             set_photo_default_duration,
             get_photo_default_duration,
+            get_media_duration,
             remove_timeline_clip,
             set_playhead,
+            set_preview_target,
             add_track,
             get_export_settings,
             update_export_settings,

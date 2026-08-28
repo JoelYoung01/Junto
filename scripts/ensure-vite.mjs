@@ -6,7 +6,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 async function viteReady() {
   try {
-    const response = await fetch("http://localhost:5173/");
+    const response = await fetch("http://localhost:1420/");
     return response.ok;
   } catch {
     return false;
@@ -14,7 +14,7 @@ async function viteReady() {
 }
 
 if (await viteReady()) {
-  console.log("[junto] Vite already running at http://localhost:5173");
+  console.log("[junto] Vite already running at http://localhost:1420");
   process.exit(0);
 }
 
