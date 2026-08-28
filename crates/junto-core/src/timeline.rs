@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -200,6 +202,104 @@ impl Timeline {
             .expect("clip exists");
         clip_mut.start = new_start;
         clip_mut.track_id = dest_track_id;
+        Ok(())
+    }
+
+    /// Atomically move multiple clips to new start times / tracks.
+    ///
+    /// Overlap checks ignore all clips in the move set, and also ensure the
+    /// proposed placements do not overlap each other.
+    pub fn move_clips(
+        &mut self,
+        moves: &[(Uuid, f64, Uuid)], // clip_id, new_start, new_track_id
+    ) -> Result<()> {
+        if moves.is_empty() {
+            return Ok(());
+        }
+
+        let moving_ids: HashSet<Uuid> = moves.iter().map(|(id, _, _)| *id).collect();
+        if moving_ids.len() != moves.len() {
+            return Err(JuntoError::Timeline(
+                "duplicate clip id in move_clips".into(),
+            ));
+        }
+
+        let mut planned: Vec<(Uuid, f64, Uuid, f64)> = Vec::with_capacity(moves.len());
+        // clip_id, start, track_id, duration
+
+        for &(clip_id, new_start, new_track_id) in moves {
+            if new_start < 0.0 {
+                return Err(JuntoError::Timeline(
+                    "start time cannot be negative".into(),
+                ));
+            }
+
+            let clip = self
+                .clips
+                .iter()
+                .find(|c| c.id == clip_id)
+                .ok_or_else(|| JuntoError::ClipNotFound(clip_id.to_string()))?
+                .clone();
+
+            let dest_track = self.track(new_track_id).ok_or_else(|| {
+                JuntoError::TrackNotFound(new_track_id.to_string())
+            })?;
+
+            if !media_kind_matches_track(clip.media_kind, dest_track.kind) {
+                return Err(JuntoError::Timeline(format!(
+                    "media kind {:?} is not compatible with {:?} track",
+                    clip.media_kind, dest_track.kind
+                )));
+            }
+
+            planned.push((clip_id, new_start, new_track_id, clip.duration));
+        }
+
+        // Mutual overlaps among planned placements on the same track.
+        for i in 0..planned.len() {
+            for j in (i + 1)..planned.len() {
+                let (_, a_start, a_track, a_dur) = planned[i];
+                let (_, b_start, b_track, b_dur) = planned[j];
+                if a_track != b_track {
+                    continue;
+                }
+                if a_start < b_start + b_dur && a_start + a_dur > b_start {
+                    return Err(JuntoError::Timeline(
+                        "move would overlap another clip in the selection".into(),
+                    ));
+                }
+            }
+        }
+
+        // Overlaps against clips not being moved.
+        for &(_clip_id, new_start, new_track_id, duration) in &planned {
+            let end = new_start + duration;
+            let overlaps = self.clips.iter().any(|other| {
+                if moving_ids.contains(&other.id) {
+                    return false;
+                }
+                if other.track_id != new_track_id {
+                    return false;
+                }
+                new_start < other.start + other.duration && end > other.start
+            });
+            if overlaps {
+                return Err(JuntoError::Timeline(
+                    "move would overlap another clip on this track".into(),
+                ));
+            }
+        }
+
+        for &(clip_id, new_start, new_track_id, _) in &planned {
+            let clip_mut = self
+                .clips
+                .iter_mut()
+                .find(|c| c.id == clip_id)
+                .expect("clip exists");
+            clip_mut.start = new_start;
+            clip_mut.track_id = new_track_id;
+        }
+
         Ok(())
     }
 
@@ -535,5 +635,61 @@ mod tests {
         let clip = timeline.clips.iter().find(|c| c.id == id).unwrap();
         assert_eq!(clip.track_id, track);
         assert!((clip.start - 4.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn move_clips_moves_group_atomically() {
+        let mut timeline = Timeline::new();
+        let video = video_track(&timeline);
+        let a = timeline
+            .add_clip(
+                video,
+                "Raw Footage/a.mp4".into(),
+                MediaKind::Video,
+                0.0,
+                1.0,
+            )
+            .unwrap();
+        let b = timeline
+            .add_clip(
+                video,
+                "Raw Footage/b.mp4".into(),
+                MediaKind::Video,
+                1.0,
+                1.0,
+            )
+            .unwrap();
+        timeline
+            .move_clips(&[(a, 5.0, video), (b, 6.0, video)])
+            .unwrap();
+        let clip_a = timeline.clips.iter().find(|c| c.id == a).unwrap();
+        let clip_b = timeline.clips.iter().find(|c| c.id == b).unwrap();
+        assert!((clip_a.start - 5.0).abs() < f64::EPSILON);
+        assert!((clip_b.start - 6.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn move_clips_rejects_overlap_with_outsider() {
+        let mut timeline = Timeline::new();
+        let video = video_track(&timeline);
+        let a = timeline
+            .add_clip(
+                video,
+                "Raw Footage/a.mp4".into(),
+                MediaKind::Video,
+                0.0,
+                1.0,
+            )
+            .unwrap();
+        let _b = timeline
+            .add_clip(
+                video,
+                "Raw Footage/b.mp4".into(),
+                MediaKind::Video,
+                5.0,
+                2.0,
+            )
+            .unwrap();
+        assert!(timeline.move_clips(&[(a, 5.5, video)]).is_err());
     }
 }
