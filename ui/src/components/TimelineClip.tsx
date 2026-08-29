@@ -7,8 +7,7 @@ import {
   DEFAULT_PIXELS_PER_SECOND,
   DEFAULT_TRACK_HEIGHT,
   clipHeightForLane,
-  filmstripIntervalWidthPx,
-  filmstripSampleTimes,
+  filmstripVisibleSlots,
   frameMaxHeightForLane,
 } from "@/lib/timelineLayout";
 
@@ -19,6 +18,10 @@ interface TimelineClipProps {
   selected?: boolean;
   /** True while this clip is being dragged — hide the original, show the ghost instead. */
   dragging?: boolean;
+  /** Round the leading edge when nothing abuts this clip on the left. */
+  roundStart?: boolean;
+  /** Round the trailing edge when nothing abuts this clip on the right. */
+  roundEnd?: boolean;
   onSelect?: (event: React.PointerEvent<HTMLDivElement>) => void;
   onMovePointerDown: (event: React.PointerEvent<HTMLDivElement>) => void;
   onRemove: () => void;
@@ -30,6 +33,8 @@ export function TimelineClip({
   laneHeight = DEFAULT_TRACK_HEIGHT,
   selected = false,
   dragging = false,
+  roundStart = true,
+  roundEnd = true,
   onSelect,
   onMovePointerDown,
   onRemove,
@@ -37,43 +42,68 @@ export function TimelineClip({
   const clipHeight = clipHeightForLane(laneHeight);
   const deferredLaneHeight = useDeferredValue(laneHeight);
   const frameMaxHeight = frameMaxHeightForLane(deferredLaneHeight);
-  const [frames, setFrames] = useState<(string | null)[]>([]);
-  const slotWidth = filmstripIntervalWidthPx(pixelsPerSecond);
+  const [frameByTime, setFrameByTime] = useState<Map<number, string | null>>(new Map());
 
-  const times = useMemo(() => {
-    if (clip.media_kind === "audio") return [] as number[];
-    if (clip.media_kind === "image") return [Math.max(0, clip.source_offset)];
-    return filmstripSampleTimes(clip.source_offset, clip.duration);
-  }, [clip.media_kind, clip.source_offset, clip.duration]);
+  // Full-height thumbs are ~clipHeight wide when roughly square; use that to skip
+  // 1s grid samples that would sit under the previous thumb.
+  const slots = useMemo(() => {
+    if (clip.media_kind === "audio") return [];
+    return filmstripVisibleSlots({
+      sourceOffset: clip.source_offset,
+      duration: clip.duration,
+      pixelsPerSecond,
+      thumbWidthPx: clipHeight,
+    });
+  }, [clip.media_kind, clip.source_offset, clip.duration, pixelsPerSecond, clipHeight]);
+
+  const fetchTimes = useMemo(() => {
+    if (clip.media_kind === "image") {
+      // Stills: one decode, reuse across visible slots.
+      return slots.length > 0 ? [Math.max(0, clip.source_offset)] : [];
+    }
+    return slots.map((s) => s.sourceTime);
+  }, [clip.media_kind, clip.source_offset, slots]);
 
   useEffect(() => {
-    if (clip.media_kind === "audio") {
-      setFrames([]);
+    if (clip.media_kind === "audio" || fetchTimes.length === 0) {
+      setFrameByTime(new Map());
       return;
     }
     let cancelled = false;
     void Promise.all(
-      times.map((time) => api.getMediaFrame(clip.source_path, time, frameMaxHeight).catch(() => null)),
-    ).then((urls) => {
-      if (!cancelled) setFrames(urls);
+      fetchTimes.map(async (time) => {
+        const url = await api.getMediaFrame(clip.source_path, time, frameMaxHeight).catch(() => null);
+        return [time, url] as const;
+      }),
+    ).then((entries) => {
+      if (cancelled) return;
+      setFrameByTime(new Map(entries));
     });
     return () => {
       cancelled = true;
     };
-  }, [clip.source_path, clip.media_kind, times, frameMaxHeight]);
+  }, [clip.source_path, clip.media_kind, fetchTimes, frameMaxHeight]);
 
-  const fallback =
-    clip.media_kind === "audio"
-      ? "bg-amber-700"
-      : clip.media_kind === "image"
-        ? "bg-emerald-800"
-        : "bg-blue-800";
+  const fallback = "bg-neutral-700";
 
   const ring = selected ? "ring-2 ring-primary ring-offset-1 ring-offset-background" : "";
+  const rounding = [
+    roundStart ? "rounded-l-md" : "rounded-l-none",
+    roundEnd ? "rounded-r-md" : "rounded-r-none",
+  ].join(" ");
+
+  const resolveUrl = (sourceTime: number): string | null => {
+    if (clip.media_kind === "image") {
+      return frameByTime.get(Math.max(0, clip.source_offset)) ?? null;
+    }
+    return frameByTime.get(sourceTime) ?? null;
+  };
+
+  const hasAnyFrame = slots.some((s) => Boolean(resolveUrl(s.sourceTime)));
 
   return (
     <div
-      className={`absolute flex cursor-grab select-none items-center overflow-hidden rounded-md text-xs text-white shadow-sm active:cursor-grabbing ${fallback} ${ring} ${
+      className={`group/clip absolute flex cursor-grab select-none items-center overflow-hidden text-xs text-white shadow-sm active:cursor-grabbing ${fallback} ${rounding} ${ring} ${
         dragging ? "opacity-30" : ""
       }`}
       style={{
@@ -98,34 +128,26 @@ export function TimelineClip({
         }
       }}
     >
-      {clip.media_kind !== "audio" && frames.some(Boolean) && (
-        <div className="pointer-events-none absolute inset-0 flex overflow-hidden">
-          {frames.map((url, index) => {
-            const isLast = index === frames.length - 1;
-            const remainingWidth = clip.duration * pixelsPerSecond - index * slotWidth;
-            const width =
-              clip.media_kind === "image"
-                ? undefined
-                : Math.max(0, isLast ? remainingWidth : Math.min(slotWidth, remainingWidth));
-
+      {clip.media_kind !== "audio" && hasAnyFrame && (
+        <div className="pointer-events-none absolute inset-0 overflow-hidden">
+          {slots.map((slot, index) => {
+            const url = resolveUrl(slot.sourceTime);
+            if (!url) return null;
+            const clipWidthPx = Math.max(clip.duration * pixelsPerSecond, 24);
+            const nextLeft = slots[index + 1]?.leftPx ?? clipWidthPx;
+            const maxWidth = Math.max(1, Math.min(clipHeight, nextLeft - slot.leftPx));
             return (
               <div
-                key={`${clip.id}-frame-${index}`}
-                className={`flex h-full shrink-0 items-stretch justify-start overflow-hidden ${
-                  clip.media_kind === "image" ? "" : "border-r border-black/20"
-                }`}
-                style={width !== undefined ? { width } : undefined}
+                key={`${clip.id}-frame-${slot.sampleIndex}`}
+                className="absolute top-0 bottom-0 overflow-hidden border-r border-black/20"
+                style={{ left: slot.leftPx, width: maxWidth }}
               >
-                {url ? (
-                  <img
-                    src={url}
-                    alt=""
-                    className="h-full w-auto max-w-none object-contain object-left"
-                    draggable={false}
-                  />
-                ) : (
-                  <div className={`h-full w-full ${fallback}`} />
-                )}
+                <img
+                  src={url}
+                  alt=""
+                  className="h-full w-full object-cover object-center"
+                  draggable={false}
+                />
               </div>
             );
           })}
@@ -134,12 +156,17 @@ export function TimelineClip({
       <div className="pointer-events-none absolute inset-0 bg-gradient-to-r from-black/20 via-transparent to-black/10" />
       <button
         type="button"
-        className="relative z-10 ml-auto rounded p-1 hover:bg-black/30"
+        className={`relative z-10 ml-auto rounded p-1 hover:bg-black/30 ${
+          selected
+            ? "opacity-100"
+            : "pointer-events-none opacity-0 group-hover/clip:pointer-events-auto group-hover/clip:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100"
+        }`}
         onClick={(e) => {
           e.stopPropagation();
           onRemove();
         }}
         onPointerDown={(e) => e.stopPropagation()}
+        aria-label="Remove clip"
       >
         <Trash2 className="h-3 w-3" />
       </button>

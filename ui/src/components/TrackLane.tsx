@@ -8,6 +8,7 @@ import {
   TRACK_LABEL_WIDTH,
   clampTrackHeight,
   clipHeightForLane,
+  clipsAbut,
   timelineContentWidthPx,
 } from "@/lib/timelineLayout";
 
@@ -58,6 +59,7 @@ export function TrackLane({
   const ghostHeight = clipHeightForLane(laneHeight);
   const contentWidth = timelineContentWidthPx(timelineDuration, pixelsPerSecond);
   const ghostTone = track.kind === "audio" ? "bg-amber-500" : "bg-sky-500";
+  const clipsByStart = [...clips].sort((a, b) => a.start - b.start);
 
   return (
     <div
@@ -69,28 +71,44 @@ export function TrackLane({
       data-track-id={track.id}
       data-track-kind={track.kind}
     >
-      <div className="sticky left-0 z-10 bg-background pr-2 pt-2 text-sm text-muted-foreground">
-        {track.name}
-        <span className="ml-1 text-[10px] uppercase opacity-70">{track.kind}</span>
+      <div
+        className="sticky left-0 z-10 relative flex items-center self-stretch overflow-visible pl-4 text-sm text-muted-foreground"
+        style={{ minHeight: laneHeight }}
+      >
+        {/* Soft scrim so scrolling clips dissolve under the label instead of a hard cutout. */}
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-y-0 left-0 -right-3 bg-gradient-to-r from-background from-40% via-background/85 to-transparent"
+        />
+        <div className="relative z-[1] max-w-full truncate pr-1">
+          {track.name}
+          <span className="ml-1 text-[10px] uppercase opacity-70">{track.kind}</span>
+        </div>
       </div>
       <div
         data-track-content
-        className="group relative rounded-lg border bg-muted/20"
+        className="group/lane relative overflow-hidden rounded-lg border bg-muted/20"
         style={{ height: laneHeight }}
       >
-        {clips.map((clip) => (
-          <TimelineClip
-            key={clip.id}
-            clip={clip}
-            pixelsPerSecond={pixelsPerSecond}
-            laneHeight={laneHeight}
-            selected={selectedClipIds.has(clip.id)}
-            dragging={draggingClipIds?.has(clip.id) ?? false}
-            onSelect={(e) => onSelectClip(clip.id, e)}
-            onMovePointerDown={(e) => onClipMovePointerDown(clip, e)}
-            onRemove={() => onRemoveClip(clip.id)}
-          />
-        ))}
+        {clipsByStart.map((clip, index) => {
+          const prev = clipsByStart[index - 1] ?? null;
+          const next = clipsByStart[index + 1] ?? null;
+          return (
+            <TimelineClip
+              key={clip.id}
+              clip={clip}
+              pixelsPerSecond={pixelsPerSecond}
+              laneHeight={laneHeight}
+              selected={selectedClipIds.has(clip.id)}
+              dragging={draggingClipIds?.has(clip.id) ?? false}
+              roundStart={!clipsAbut(prev, clip)}
+              roundEnd={!next || !clipsAbut(clip, next)}
+              onSelect={(e) => onSelectClip(clip.id, e)}
+              onMovePointerDown={(e) => onClipMovePointerDown(clip, e)}
+              onRemove={() => onRemoveClip(clip.id)}
+            />
+          );
+        })}
         {dropGhosts.map((ghost, index) => (
           <div
             key={`ghost-${track.id}-${index}-${ghost.start}`}
@@ -111,7 +129,7 @@ export function TrackLane({
           className="absolute bottom-0 left-0 right-0 z-30 h-2 cursor-ns-resize touch-none"
           onPointerDown={onResizePointerDown}
         >
-          <div className="mx-auto mt-1 h-0.5 w-10 rounded-full bg-border opacity-0 transition-opacity group-hover:opacity-100" />
+          <div className="mx-auto mt-1 h-0.5 w-10 rounded-full bg-border opacity-0 transition-opacity group-hover/lane:opacity-100" />
         </div>
       </div>
     </div>

@@ -296,7 +296,8 @@ export function useTimelineInteractions({
       }
 
       event.preventDefault();
-      panBy(event.deltaX + event.deltaY);
+      const speed = event.shiftKey ? 10 : 1;
+      panBy((event.deltaX + event.deltaY) * speed);
     };
 
     scroller.addEventListener("wheel", onWheel, { passive: false });

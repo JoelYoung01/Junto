@@ -124,7 +124,22 @@ export function EditorView({ onNewProject }: EditorViewProps) {
   const activeTrackIdRef = useRef<string | null>(null);
 
   const togglePlay = useCallback(() => {
-    setPlaying((prev) => !prev);
+    if (playingRef.current) {
+      setPlaying(false);
+      return;
+    }
+
+    // If already at the end, restart from 0 instead of immediately pausing.
+    const duration = durationRef.current;
+    if (duration > 0 && playheadRef.current >= duration - 1e-3) {
+      playheadRef.current = 0;
+      paintPlayheadRef.current(0);
+      setTimeline((prev) => (prev ? { ...prev, playhead: 0 } : prev));
+      void api.setPlayhead(0).catch(() => {});
+      void api.setPreviewTarget(0, 360, false).catch(() => {});
+    }
+
+    setPlaying(true);
   }, []);
 
   const setPlayheadPosition = useCallback(async (position: number) => {
@@ -804,6 +819,34 @@ export function EditorView({ onNewProject }: EditorViewProps) {
     setSelectionAnchorId(null);
   }, []);
 
+  const removeClipsById = useCallback(
+    async (clipIds: string[]) => {
+      const ids = [...new Set(clipIds.filter(Boolean))];
+      if (ids.length === 0) return;
+
+      try {
+        await api.removeTimelineClips(ids);
+        await refresh();
+        const removed = new Set(ids);
+        setSelectedClipIds((prev) => {
+          const next = prev.filter((id) => !removed.has(id));
+          selectedClipIdsRef.current = next;
+          return next;
+        });
+        setSelectionAnchorId((prev) => {
+          const next = prev && removed.has(prev) ? null : prev;
+          selectionAnchorIdRef.current = next;
+          return next;
+        });
+        setError(null);
+      } catch (err) {
+        setError(invokeErrorMessage(err));
+        await refresh();
+      }
+    },
+    [refresh],
+  );
+
   const onSelectClip = useCallback(
     (clipId: string, event: React.PointerEvent) => {
       const state = timelineRef.current;
@@ -896,10 +939,25 @@ export function EditorView({ onNewProject }: EditorViewProps) {
     }
 
     function onKeyDown(event: KeyboardEvent) {
+      if (isTypingTarget(event.target)) return;
+
+      // Delete / Backspace → remove selected clip(s).
+      if (
+        (event.key === "Delete" || event.key === "Backspace") &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey
+      ) {
+        const ids = selectedClipIdsRef.current;
+        if (ids.length === 0) return;
+        event.preventDefault();
+        void removeClipsById(ids);
+        return;
+      }
+
       if (!(event.ctrlKey || event.metaKey)) return;
       if (event.key.toLowerCase() !== "a") return;
       if (event.altKey) return;
-      if (isTypingTarget(event.target)) return;
 
       const state = timelineRef.current;
       if (!state) return;
@@ -919,7 +977,7 @@ export function EditorView({ onNewProject }: EditorViewProps) {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [removeClipsById]);
 
   const selectedClip = useMemo(() => {
     if (selectedClipIds.length !== 1 || !timeline) return null;
@@ -1189,7 +1247,7 @@ export function EditorView({ onNewProject }: EditorViewProps) {
         </aside>
 
         <main className="flex min-h-0 min-w-0 flex-col overflow-hidden">
-          <section className="flex min-h-0 flex-1 flex-col border-b p-4">
+          <section className="flex min-h-0 flex-1 flex-col border-b bg-muted/60 p-4">
             <div className="mb-3 flex shrink-0 items-center gap-2">
               <Button size="icon" variant="outline" onClick={() => togglePlay()}>
                 {playing ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
@@ -1206,57 +1264,6 @@ export function EditorView({ onNewProject }: EditorViewProps) {
                   <span className="shrink-0 text-xs capitalize text-muted-foreground">
                     {selectedClip.media_kind}
                   </span>
-                  <div className="ml-auto flex shrink-0 items-end gap-2">
-                    {selectedClip.media_kind !== "image" && (
-                      <div className="space-y-0.5">
-                        <Label htmlFor="trim-in" className="text-[10px]">
-                          In
-                        </Label>
-                        <input
-                          id="trim-in"
-                          type="number"
-                          min={0}
-                          step={0.1}
-                          className="h-8 w-20 rounded-md border bg-background px-2 text-sm"
-                          value={trimIn}
-                          onChange={(e) => setTrimIn(e.target.value)}
-                          onBlur={() =>
-                            void applyTrimValues(trimIn, trimDuration, { reportInvalid: true })
-                          }
-                        />
-                      </div>
-                    )}
-                    <div className="space-y-0.5">
-                      <Label htmlFor="trim-duration" className="text-[10px]">
-                        Duration
-                      </Label>
-                      <input
-                        id="trim-duration"
-                        type="number"
-                        min={0.1}
-                        max={maxSelectedDuration ?? undefined}
-                        step={0.1}
-                        className="h-8 w-20 rounded-md border bg-background px-2 text-sm"
-                        value={trimDuration}
-                        onChange={(e) => {
-                          const raw = e.target.value;
-                          const n = Number(raw);
-                          if (
-                            maxSelectedDuration != null &&
-                            Number.isFinite(n) &&
-                            n > maxSelectedDuration
-                          ) {
-                            setTrimDuration(String(maxSelectedDuration));
-                            return;
-                          }
-                          setTrimDuration(raw);
-                        }}
-                        onBlur={() =>
-                          void applyTrimValues(trimIn, trimDuration, { reportInvalid: true })
-                        }
-                      />
-                    </div>
-                  </div>
                 </>
               ) : selectedClipCount > 1 ? (
                 <>
@@ -1266,10 +1273,66 @@ export function EditorView({ onNewProject }: EditorViewProps) {
                   </span>
                 </>
               ) : null}
+              <div className="ml-auto flex shrink-0 items-end gap-2">
+                {selectedClip && selectedClip.media_kind !== "image" && (
+                  <div className="space-y-0.5">
+                    <Label htmlFor="trim-in" className="text-[10px]">
+                      In
+                    </Label>
+                    <input
+                      id="trim-in"
+                      type="number"
+                      min={0}
+                      step={0.1}
+                      className="h-8 w-20 rounded-md border bg-background px-2 text-sm"
+                      value={trimIn}
+                      onChange={(e) => setTrimIn(e.target.value)}
+                      onBlur={() =>
+                        void applyTrimValues(trimIn, trimDuration, { reportInvalid: true })
+                      }
+                    />
+                  </div>
+                )}
+                {selectedClip && (
+                  <div className="space-y-0.5">
+                    <Label htmlFor="trim-duration" className="text-[10px]">
+                      Duration
+                    </Label>
+                    <input
+                      id="trim-duration"
+                      type="number"
+                      min={0.1}
+                      max={maxSelectedDuration ?? undefined}
+                      step={0.1}
+                      className="h-8 w-20 rounded-md border bg-background px-2 text-sm"
+                      value={trimDuration}
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        const n = Number(raw);
+                        if (
+                          maxSelectedDuration != null &&
+                          Number.isFinite(n) &&
+                          n > maxSelectedDuration
+                        ) {
+                          setTrimDuration(String(maxSelectedDuration));
+                          return;
+                        }
+                        setTrimDuration(raw);
+                      }}
+                      onBlur={() =>
+                        void applyTrimValues(trimIn, trimDuration, { reportInvalid: true })
+                      }
+                    />
+                  </div>
+                )}
+                <span className="self-center text-sm text-muted-foreground">
+                  {previewOutW}×{previewOutH}
+                </span>
+              </div>
             </div>
 
             <div
-              className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded-lg border bg-neutral-950 p-2"
+              className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden"
               style={{ containerType: "size" }}
             >
               <div
@@ -1295,16 +1358,13 @@ export function EditorView({ onNewProject }: EditorViewProps) {
                     </p>
                   </div>
                 )}
-                <div className="pointer-events-none absolute bottom-2 left-2 rounded bg-black/60 px-2 py-0.5 text-[10px] text-white">
-                  {timeline.playhead.toFixed(1)}s · {previewOutW}×{previewOutH}
-                </div>
               </div>
             </div>
           </section>
 
           <section
             ref={timelineScrollRef}
-            className="min-h-0 flex-1 select-none overflow-auto overscroll-contain p-4"
+            className="min-h-0 flex-1 select-none overflow-auto overscroll-contain py-4 pr-4 pl-0"
             onScroll={onTimelineScroll}
             onPointerDown={markUserTimelineGesture}
           >
@@ -1321,7 +1381,12 @@ export function EditorView({ onNewProject }: EditorViewProps) {
                   columnGap: TRACK_GAP,
                 }}
               >
-                <div className="sticky left-0 z-10 bg-background" />
+                <div className="sticky left-0 z-10 relative self-stretch pl-4">
+                  <div
+                    aria-hidden
+                    className="pointer-events-none absolute inset-y-0 left-0 -right-3 bg-gradient-to-r from-background from-40% via-background/85 to-transparent"
+                  />
+                </div>
                 <TimelineRuler
                   duration={duration}
                   pixelsPerSecond={pixelsPerSecond}
@@ -1351,16 +1416,7 @@ export function EditorView({ onNewProject }: EditorViewProps) {
                   onResizeEnd={() => setResizingTracks(false)}
                   onSelectClip={onSelectClip}
                   onClipMovePointerDown={onClipMovePointerDown}
-                  onRemoveClip={(clipId) =>
-                    void api
-                      .removeTimelineClip(clipId)
-                      .then(refresh)
-                      .then(() => {
-                        setSelectedClipIds((prev) => prev.filter((id) => id !== clipId));
-                        setSelectionAnchorId((prev) => (prev === clipId ? null : prev));
-                      })
-                      .catch((err) => setError(invokeErrorMessage(err)))
-                  }
+                  onRemoveClip={(clipId) => void removeClipsById([clipId])}
                 />
               ))}
 

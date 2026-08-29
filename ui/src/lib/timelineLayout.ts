@@ -13,12 +13,13 @@ export const TRACK_CONTENT_OFFSET = TRACK_LABEL_WIDTH + TRACK_GAP;
 export const PLAYHEAD_FOLLOW_MARGIN_PX = 100;
 
 export const DEFAULT_TRACK_HEIGHT = 64;
-export const CLIP_INSET = 8;
+/** Vertical inset between clip and track edge. 0 = clips fill the lane height. */
+export const CLIP_INSET = 0;
 export const MIN_TRACK_HEIGHT = 32;
 export const MAX_TRACK_HEIGHT = 240;
 
 /** One filmstrip thumbnail every N seconds of clip duration. */
-export const FILMSTRIP_INTERVAL_SECONDS = 2;
+export const FILMSTRIP_INTERVAL_SECONDS = 1;
 
 const NICE_TIME_INTERVALS = [
   0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600,
@@ -34,6 +35,16 @@ export function clampTrackHeight(height: number): number {
 
 export function clipHeightForLane(laneHeight: number): number {
   return Math.max(16, laneHeight - 2 * CLIP_INSET);
+}
+
+/** True when `clip` starts exactly where `previous` ends (packed edge-to-edge). */
+export function clipsAbut(
+  previous: { start: number; duration: number } | null | undefined,
+  clip: { start: number },
+  epsilon = 1e-3,
+): boolean {
+  if (!previous) return false;
+  return Math.abs(previous.start + previous.duration - clip.start) <= epsilon;
 }
 
 export function frameMaxHeightForLane(laneHeight: number): number {
@@ -54,6 +65,49 @@ export function filmstripSampleTimes(sourceOffset: number, duration: number): nu
   }
   if (times.length === 0) times.push(Math.max(0, sourceOffset));
   return times;
+}
+
+export type FilmstripSlot = {
+  /** Index into the 1s sample grid (0 = clip start). */
+  sampleIndex: number;
+  /** Source media time for this thumbnail. */
+  sourceTime: number;
+  /** Left offset within the clip, in pixels. */
+  leftPx: number;
+};
+
+/**
+ * Place filmstrip thumbs on a 1s grid, skipping samples whose slot would sit
+ * under the previous thumbnail's displayed width (full-height, natural aspect).
+ */
+export function filmstripVisibleSlots(args: {
+  sourceOffset: number;
+  duration: number;
+  pixelsPerSecond: number;
+  /** Estimated on-screen thumb width (typically lane/clip height for contain). */
+  thumbWidthPx: number;
+}): FilmstripSlot[] {
+  const { sourceOffset, duration, pixelsPerSecond, thumbWidthPx } = args;
+  const slotW = filmstripIntervalWidthPx(pixelsPerSecond);
+  const times = filmstripSampleTimes(sourceOffset, duration);
+  if (times.length === 0) return [];
+
+  const advance = Math.max(1, thumbWidthPx);
+  const slots: FilmstripSlot[] = [];
+  let occupiedUntil = 0;
+
+  for (let i = 0; i < times.length; i++) {
+    const leftPx = i * slotW;
+    if (leftPx < occupiedUntil - 1e-6) continue;
+    slots.push({
+      sampleIndex: i,
+      sourceTime: times[i]!,
+      leftPx,
+    });
+    occupiedUntil = leftPx + advance;
+  }
+
+  return slots;
 }
 
 export function playheadLeftPx(
