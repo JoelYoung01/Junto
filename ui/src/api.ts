@@ -144,6 +144,8 @@ export const api = {
   getMediaDuration: (sourcePath: string) =>
     invoke<number>("get_media_duration", { sourcePath }),
   removeTimelineClip: (clipId: string) => invoke<void>("remove_timeline_clip", { clipId }),
+  removeTimelineClips: (clipIds: string[]) =>
+    invoke<void>("remove_timeline_clips", { clipIds }),
   setPlayhead: (position: number) => invoke<void>("set_playhead", { position }),
   addTrack: (kind: "video" | "audio") => invoke<string>("add_track", { kind }),
   getExportSettings: () => invoke<ExportSettings>("get_export_settings"),

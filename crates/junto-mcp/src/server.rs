@@ -144,7 +144,7 @@ impl JuntoMcpServer {
         )
     }
 
-    #[tool(description = "Remove a clip from the timeline")]
+    #[tool(description = "Remove a clip and ripple later clips on that track left by its duration")]
     fn remove_clip(&self, Parameters(params): Parameters<RemoveClipParams>) -> CallToolResult {
         self.run_tool(
             "remove_clip",

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -376,12 +376,69 @@ impl Timeline {
         Ok(())
     }
 
+    /// Remove a clip and ripple later clips on the same track left by its duration.
     pub fn remove_clip(&mut self, clip_id: Uuid) -> Result<()> {
-        let len_before = self.clips.len();
-        self.clips.retain(|c| c.id != clip_id);
-        if self.clips.len() == len_before {
-            return Err(JuntoError::ClipNotFound(clip_id.to_string()));
+        self.remove_clips(&[clip_id])
+    }
+
+    /// Remove one or more clips and ripple remaining clips on each affected track.
+    ///
+    /// For every surviving clip, its start shifts left by the total duration of
+    /// deleted clips that began earlier on the same track. All removals are
+    /// applied atomically so multi-delete order does not matter.
+    pub fn remove_clips(&mut self, clip_ids: &[Uuid]) -> Result<()> {
+        if clip_ids.is_empty() {
+            return Ok(());
         }
+
+        let mut unique: HashSet<Uuid> = HashSet::new();
+        for id in clip_ids {
+            if !unique.insert(*id) {
+                continue;
+            }
+            if !self.clips.iter().any(|c| c.id == *id) {
+                return Err(JuntoError::ClipNotFound(id.to_string()));
+            }
+        }
+
+        // Per track: deleted (start, duration) pairs for ripple math.
+        let mut deleted_by_track: HashMap<Uuid, Vec<(f64, f64)>> = HashMap::new();
+        for clip in &self.clips {
+            if !unique.contains(&clip.id) {
+                continue;
+            }
+            deleted_by_track
+                .entry(clip.track_id)
+                .or_default()
+                .push((clip.start, clip.duration));
+        }
+
+        // New starts for survivors before we mutate the vec.
+        let mut new_starts: HashMap<Uuid, f64> = HashMap::new();
+        for clip in &self.clips {
+            if unique.contains(&clip.id) {
+                continue;
+            }
+            let Some(deleted) = deleted_by_track.get(&clip.track_id) else {
+                continue;
+            };
+            let shift: f64 = deleted
+                .iter()
+                .filter(|(start, _)| *start < clip.start - 1e-9)
+                .map(|(_, duration)| *duration)
+                .sum();
+            if shift > 1e-12 {
+                new_starts.insert(clip.id, (clip.start - shift).max(0.0));
+            }
+        }
+
+        self.clips.retain(|c| !unique.contains(&c.id));
+        for clip in &mut self.clips {
+            if let Some(start) = new_starts.get(&clip.id) {
+                clip.start = *start;
+            }
+        }
+
         Ok(())
     }
 }
@@ -691,5 +748,122 @@ mod tests {
             )
             .unwrap();
         assert!(timeline.move_clips(&[(a, 5.5, video)]).is_err());
+    }
+
+    #[test]
+    fn remove_clip_ripples_later_clips_on_same_track() {
+        let mut timeline = Timeline::new();
+        let video = video_track(&timeline);
+        let a = timeline
+            .add_clip(
+                video,
+                "Raw Footage/a.mp4".into(),
+                MediaKind::Video,
+                0.0,
+                2.0,
+            )
+            .unwrap();
+        let b = timeline
+            .add_clip(
+                video,
+                "Raw Footage/b.mp4".into(),
+                MediaKind::Video,
+                2.0,
+                3.0,
+            )
+            .unwrap();
+        let c = timeline
+            .add_clip(
+                video,
+                "Raw Footage/c.mp4".into(),
+                MediaKind::Video,
+                5.0,
+                1.0,
+            )
+            .unwrap();
+
+        timeline.remove_clip(a).unwrap();
+        let clip_b = timeline.clips.iter().find(|clip| clip.id == b).unwrap();
+        let clip_c = timeline.clips.iter().find(|clip| clip.id == c).unwrap();
+        assert!((clip_b.start - 0.0).abs() < f64::EPSILON);
+        assert!((clip_c.start - 3.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn remove_clips_ripples_batch_independently_of_order() {
+        let mut timeline = Timeline::new();
+        let video = video_track(&timeline);
+        let a = timeline
+            .add_clip(
+                video,
+                "Raw Footage/a.mp4".into(),
+                MediaKind::Video,
+                0.0,
+                2.0,
+            )
+            .unwrap();
+        let b = timeline
+            .add_clip(
+                video,
+                "Raw Footage/b.mp4".into(),
+                MediaKind::Video,
+                2.0,
+                3.0,
+            )
+            .unwrap();
+        let c = timeline
+            .add_clip(
+                video,
+                "Raw Footage/c.mp4".into(),
+                MediaKind::Video,
+                5.0,
+                2.0,
+            )
+            .unwrap();
+        let d = timeline
+            .add_clip(
+                video,
+                "Raw Footage/d.mp4".into(),
+                MediaKind::Video,
+                7.0,
+                1.0,
+            )
+            .unwrap();
+
+        // Delete A and C; B and D should shift by 2 and 4 respectively.
+        timeline.remove_clips(&[c, a]).unwrap();
+        let clip_b = timeline.clips.iter().find(|clip| clip.id == b).unwrap();
+        let clip_d = timeline.clips.iter().find(|clip| clip.id == d).unwrap();
+        assert!((clip_b.start - 0.0).abs() < f64::EPSILON);
+        assert!((clip_d.start - 3.0).abs() < f64::EPSILON);
+        assert_eq!(timeline.clips.len(), 2);
+    }
+
+    #[test]
+    fn remove_clip_does_not_ripple_other_tracks() {
+        let mut timeline = Timeline::new();
+        let v1 = video_track(&timeline);
+        let v2 = timeline.add_track(TrackKind::Video);
+        let a = timeline
+            .add_clip(
+                v1,
+                "Raw Footage/a.mp4".into(),
+                MediaKind::Video,
+                0.0,
+                2.0,
+            )
+            .unwrap();
+        let b = timeline
+            .add_clip(
+                v2,
+                "Raw Footage/b.mp4".into(),
+                MediaKind::Video,
+                2.0,
+                3.0,
+            )
+            .unwrap();
+        timeline.remove_clip(a).unwrap();
+        let clip_b = timeline.clips.iter().find(|clip| clip.id == b).unwrap();
+        assert!((clip_b.start - 2.0).abs() < f64::EPSILON);
     }
 }

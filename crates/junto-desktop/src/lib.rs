@@ -324,13 +324,21 @@ fn get_media_duration(source_path: String, state: State<'_, AppState>) -> Result
 
 #[tauri::command]
 fn remove_timeline_clip(clip_id: String, state: State<'_, AppState>) -> Result<(), String> {
-    let clip_id = Uuid::parse_str(&clip_id).map_err(|e| e.to_string())?;
+    remove_timeline_clips(vec![clip_id], state)
+}
+
+#[tauri::command]
+fn remove_timeline_clips(clip_ids: Vec<String>, state: State<'_, AppState>) -> Result<(), String> {
+    let mut parsed = Vec::with_capacity(clip_ids.len());
+    for id in clip_ids {
+        parsed.push(Uuid::parse_str(&id).map_err(|e| e.to_string())?);
+    }
     let mut guard = state.project.write().map_err(|e| e.to_string())?;
     let project = guard.as_mut().ok_or_else(|| "no project open".to_string())?;
     project
         .file
         .timeline
-        .remove_clip(clip_id)
+        .remove_clips(&parsed)
         .map_err(|e| e.to_string())?;
     project.save().map_err(|e| e.to_string())?;
     Ok(())
@@ -652,6 +660,7 @@ pub fn run() {
             get_photo_default_duration,
             get_media_duration,
             remove_timeline_clip,
+            remove_timeline_clips,
             set_playhead,
             set_preview_target,
             add_track,
